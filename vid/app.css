@@ -103,9 +103,6 @@ form[data-vid-drop-target] {
   [data-vid-promt-word] { display: none; }
 }
 
-/* Во всех чатах полный доступ, его ставит full-access.tsx: выбирать режим незачем. */
-button[aria-label="Permission mode"] { display: none; }
-
 /* Заголовок периода над первой строкой периода, по нажатию период сворачивается: chat-date-headings.tsx. Галочка на компьютере появляется при наведении, у свёрнутого видна всегда. */
 [data-vid-date-heading] {
   display: flex;
