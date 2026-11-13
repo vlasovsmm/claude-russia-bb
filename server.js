@@ -2952,6 +2952,7 @@ var Program = class {
 var POLL_MS = 2e3;
 var WAIT_MS = 10 * 6e4;
 var REFRESH_MS = 6 * 36e5;
+var CHECK_MS = 10 * 6e4;
 var say2 = (mesto) => teksty.t("\u0411\u04111", mesto);
 var Account = class {
   /** base — адрес сервиса, client — версия плагина для сервиса, changed — меню перечитывает состояние. */
@@ -2975,6 +2976,7 @@ var Account = class {
   device = null;
   ready = false;
   timer;
+  watch;
   secrets;
   files;
   state() {
@@ -3019,8 +3021,10 @@ var Account = class {
     await this.prepare();
     return this.view;
   }
-  /** Сервис сказал DEVICE_GONE: отключили в «Интеграциях», сменили пароль, закрыли место. */
-  async gone() {
+  /** Сервис сказал DEVICE_GONE: отключили в «Интеграциях», сменили пароль, закрыли место. Отказ, пришедший по
+      прошлому входу, новый вход не трогает: «Выйти» и сразу «Войти» иначе стирали только что подтверждённый вход. */
+  async gone(device = this.device) {
+    if (!device || device !== this.device) return;
     await this.erase();
     this.set({ phase: "out", note: say2("\u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E") });
   }
@@ -3073,6 +3077,7 @@ var Account = class {
     if (first) this.set({ phase: "installing", login: device.person.login, note: say2("\u0441\u0442\u0430\u0432\u0438\u043C") });
     try {
       await this.program.ensure(device.server);
+      if (this.device !== device) return;
       await this.files.link(device);
       this.ready = true;
     } catch (error62) {
@@ -3085,13 +3090,24 @@ var Account = class {
       await writeFile7(places.pyHook, PY_HOOK);
       await this.kit().sync(this.server());
     } catch (error62) {
-      if (error62 instanceof DeviceGone) return void await this.gone();
+      if (error62 instanceof DeviceGone) return void await this.gone(device);
       this.warn(`\u043D\u0430\u0431\u043E\u0440 \u043D\u0435 \u0441\u0432\u0435\u0440\u0438\u043B\u0441\u044F: ${error62.message}`);
     }
+    if (this.device !== device) return;
     this.set({ phase: "in", login: device.person.login, note: first ? say2("\u0433\u043E\u0442\u043E\u0432\u043E") : this.view.note });
     if (!this.timer) {
       this.timer = setInterval(() => void this.prepare(), REFRESH_MS);
       this.timer.unref();
+      this.watch = setInterval(() => void this.check(), CHECK_MS);
+      this.watch.unref();
+    }
+  }
+  async check() {
+    const device = this.device;
+    try {
+      await this.server()?.limits();
+    } catch (error62) {
+      if (error62 instanceof DeviceGone) await this.gone(device);
     }
   }
   kit() {
@@ -3100,7 +3116,8 @@ var Account = class {
   }
   async erase() {
     clearInterval(this.timer);
-    this.timer = void 0;
+    clearInterval(this.watch);
+    this.timer = this.watch = void 0;
     this.device = null;
     this.ready = false;
     await this.secrets.erase();
