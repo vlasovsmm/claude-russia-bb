@@ -1,0 +1,162 @@
+[
+ {
+  "pattern": "^(.+ · )just now$",
+  "ru": "{1}только что"
+ },
+ {
+  "pattern": "^(.+ · )(\\d+)m ago$",
+  "ru": "{1}{2} мин назад"
+ },
+ {
+  "pattern": "^(.+ · )(\\d+)h ago$",
+  "ru": "{1}{2} ч назад"
+ },
+ {
+  "pattern": "^(.+ · )(\\d+)d ago$",
+  "ru": "{1}{2} дн назад"
+ },
+ {
+  "pattern": "^(.+ · )Yesterday$",
+  "ru": "{1}вчера"
+ },
+ {
+  "pattern": "^(\\d+)m ago$",
+  "ru": "{1} мин назад"
+ },
+ {
+  "pattern": "^(\\d+)h ago$",
+  "ru": "{1} ч назад"
+ },
+ {
+  "pattern": "^(\\d+)d ago$",
+  "ru": "{1} дн назад"
+ },
+ {
+  "pattern": "^(\\d+) threads?$",
+  "ru": "{1} {чат|чата|чатов}"
+ },
+ {
+  "pattern": "^(\\d+) child threads?$",
+  "ru": "{1} {вложенный чат|вложенных чата|вложенных чатов}"
+ },
+ {
+  "pattern": "^and (\\d+) child threads?$",
+  "ru": "и ещё {1} {вложенный чат|вложенных чата|вложенных чатов}"
+ },
+ {
+  "pattern": "^(\\d+) machines?$",
+  "ru": "{1} {компьютер|компьютера|компьютеров}"
+ },
+ {
+  "pattern": "^(\\d+) projects?$",
+  "ru": "{1} {проект|проекта|проектов}"
+ },
+ {
+  "pattern": "^(\\d+) processors?$",
+  "ru": "{1} {процессор|процессора|процессоров}"
+ },
+ {
+  "pattern": "^Auto \\((\\d+)\\)$",
+  "ru": "Авто ({1})"
+ },
+ {
+  "pattern": "^Archive (\\d+) threads\\?$",
+  "ru": "Отправить в архив {1} {чат|чата|чатов}?"
+ },
+ {
+  "pattern": "^Even with (.+)$",
+  "ru": "Совпадает с {1}"
+ },
+ {
+  "pattern": "^Current \\((.+)\\)$",
+  "ru": "Текущая ({1})"
+ },
+ {
+  "pattern": "^Open workspace in (.+)$",
+  "ru": "Открыть рабочую папку: {1}"
+ },
+ {
+  "pattern": "^Nothing to update on (.+)\\.$",
+  "ru": "На {1} обновлять нечего."
+ },
+ {
+  "pattern": "^Browse to the project folder on (.+), or edit the path directly\\.$",
+  "ru": "Выберите папку проекта на {1} или впишите путь вручную."
+ },
+ {
+  "pattern": "^Refreshed (\\d.+)$",
+  "ru": "Обновлено {1}"
+ },
+ {
+  "pattern": "^Last refresh failed: (.+)$",
+  "ru": "Не удалось обновить: {1}"
+ },
+ {
+  "pattern": "^Another bb at (.+) comes first on your PATH\\. Remove it to install this one\\.$",
+  "ru": "В PATH первым идёт другой bb: {1}. Удалите его, чтобы установить этот."
+ },
+ {
+  "pattern": "^Allow network connection to (.+)\\?$",
+  "ru": "Разрешить подключение к {1}?"
+ },
+ {
+  "pattern": "^Tool: (.+)$",
+  "ru": "Инструмент: {1}"
+ },
+ {
+  "pattern": "^Permission: (.+)$",
+  "ru": "Разрешение: {1}"
+ },
+ {
+  "pattern": "^(\\d+) files?$",
+  "ru": "{1} {файл|файла|файлов}"
+ },
+ {
+  "pattern": "^(\\d+) unmodified lines?$",
+  "ru": "{1} {строка|строки|строк} без изменений"
+ },
+ {
+  "pattern": "^Uncommitted · (\\d+) files?$",
+  "ru": "Без коммита · {1} {файл|файла|файлов}"
+ },
+ {
+  "pattern": "^(\\d+)m$",
+  "ru": "{1} мин"
+ },
+ {
+  "pattern": "^(\\d+)h$",
+  "ru": "{1} ч"
+ },
+ {
+  "pattern": "^(\\d+)h (\\d+)m$",
+  "ru": "{1} ч {2} мин"
+ },
+ {
+  "pattern": "^(\\d+)d$",
+  "ru": "{1} д"
+ },
+ {
+  "pattern": "^(\\d+)d (\\d+)h$",
+  "ru": "{1} д {2} ч"
+ },
+ {
+  "pattern": "^(\\d+)d · (.+)$",
+  "ru": "{1} д · {2}"
+ },
+ {
+  "pattern": "^Resets in (\\d+) min$",
+  "ru": "Сброс через {1} мин"
+ },
+ {
+  "pattern": "^Resets in (\\d+) hr$",
+  "ru": "Сброс через {1} ч"
+ },
+ {
+  "pattern": "^Resets in (\\d+) hr (\\d+) min$",
+  "ru": "Сброс через {1} ч {2} мин"
+ },
+ {
+  "pattern": "^Resets (.+)$",
+  "ru": "Сброс {1}"
+ }
+]

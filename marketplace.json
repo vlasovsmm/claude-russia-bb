@@ -1,0 +1,72 @@
+{
+  "$schema": "https://getbb.app/schemas/marketplace.schema.json",
+  "schemaVersion": 1,
+  "name": "claude-russia",
+  "displayName": "Claude Russia",
+  "description": "Claude в bb из России без VPN по подписке Claude Russia.",
+  "plugins": [
+    {
+      "id": "claude-russia",
+      "displayName": "Claude Russia",
+      "description": "Claude из России без VPN: чаты bb идут через вашу подписку Claude Russia.",
+      "author": {
+        "name": "Claude Russia",
+        "url": "https://claude-russia.ru"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/vlasovsmm/claude-russia-bb.git",
+          "range": "^1.0.0"
+        }
+      }
+    },
+    {
+      "id": "vid",
+      "displayName": "Вид чата",
+      "description": "Чинит прокрутку чата при видимом оглавлении, ограничивает высоту поля ответа, сворачивает список команд, показывает архивные чаты под списком чатов, делит список чатов заголовками дат, закрепляет чат перетаскиванием, держит в заголовке вкладки постоянное название bb добавляет значок своего промта у микрофона и держит полный доступ во всех чатах.",
+      "author": {
+        "name": "Claude Russia",
+        "url": "https://claude-russia.ru"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/vlasovsmm/claude-russia-bb.git",
+          "subdir": "vid",
+          "range": "^1.0.0"
+        }
+      }
+    },
+    {
+      "id": "russkij",
+      "displayName": "Русский интерфейс",
+      "description": "Показывает надписи bb на русском.",
+      "author": {
+        "name": "Claude Russia",
+        "url": "https://claude-russia.ru"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/vlasovsmm/claude-russia-bb.git",
+          "subdir": "russkij",
+          "range": "^1.0.0"
+        }
+      }
+    },
+    {
+      "id": "perezapusk",
+      "displayName": "Перезагрузка без потерь",
+      "description": "Прерванные перезапуском чаты продолжаются сами, а перезагрузка ждёт, пока чаты закончат работу.",
+      "author": {
+        "name": "Claude Russia",
+        "url": "https://claude-russia.ru"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/vlasovsmm/claude-russia-bb.git",
+          "subdir": "perezapusk",
+          "range": "^1.0.0"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+/*
+ * Прокрутка чата. Пока слой оглавления лежит выше чата, колесо и тачпад чат не двигают: замер в Яндекс Браузере на bb 0.48.1.
+ * Настройка z-index переносится со всего слоя на саму полоску: так панель оглавления остаётся над полем ответа.
+ */
+[data-scroll-overlay]:has([data-thread-toc]) { z-index: auto !important; }
+[data-thread-toc] { z-index: 30; }
+
+/* Поле ответа вне телефона: одна строка, когда пусто, и около 6 строк при длинном тексте. Свёрнутая полоска у bb отмечена классом h-12, её не трогаем. */
+@media not ((max-width: 767px) and (pointer: coarse)) {
+  [data-follow-up-composer] [data-promptbox-editor-scroll]:not(.h-12) {
+    min-height: 52px !important;
+    max-height: 148px !important;
+  }
+}
+
+/*
+ * Поле ответа на телефоне. bb считает предел поля от всего экрана вместе с частью под клавиатурой, и поле закрывает чат.
+ * Нижняя строка с веткой и режимом существует только в развёрнутом поле, поэтому её видно, пока поле пустое.
+ */
+@media (max-width: 767px) and (pointer: coarse) {
+  [data-follow-up-composer] [data-promptbox-editor-scroll] { max-height: 120px !important; }
+  [data-follow-up-composer]:has(.ProseMirror:focus):not(:has(.ProseMirror p.is-editor-empty:first-child)) [data-follow-up-composer-footer] {
+    opacity: 0;
+    pointer-events: none;
+    min-height: 0;
+    max-height: 0;
+    margin-top: 0;
+  }
+}
+
+/* Строка «Размышление» шире меню и обрезана с обеих сторон, прокрутки у неё нет: крайние варианты недостижимы. Переносим на вторую строку. */
+[role="radiogroup"][aria-label="Reasoning"] {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+[role="radiogroup"][aria-label="Reasoning"] > * { flex: 0 0 auto; }
+
+/* Плюс свёрнутого поля: у развёрнутого поля есть плюс самого bb. */
+form[data-promptbox][data-promptbox-compact] [data-promptbox-main]:has(> [data-vid-attach]) {
+  display: flex;
+  align-items: center;
+}
+[data-vid-attach] {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-left: 4px;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Файл над страницей: видно, что его можно отпустить и куда он пойдёт. */
+[data-vid-drop-hint] {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+form[data-vid-drop-target] {
+  outline: 3px solid #3b82f6;
+}
+
+/* Значок своего промта у микрофона, размером с микрофон. Нажатое состояние: серый фон, вне телефона ещё и слово. */
+[data-vid-promt] {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-vid-promt]:hover { background: var(--accent); }
+}
+[data-vid-promt][aria-pressed="true"] {
+  padding: 0 8px 0 6px;
+  background: var(--accent);
+  color: var(--foreground);
+}
+[data-vid-promt-icon] { display: inline-flex; }
+@media (max-width: 767px) and (pointer: coarse) {
+  [data-vid-promt] { min-width: 40px; height: 40px; border-radius: 8px; }
+  [data-vid-promt][aria-pressed="true"] { padding: 0; }
+  [data-vid-promt-word] { display: none; }
+}
+
+/* Во всех чатах полный доступ, его ставит full-access.tsx: выбирать режим незачем. */
+button[aria-label="Permission mode"] { display: none; }
+
+/* Заголовок периода над первой строкой периода, по нажатию период сворачивается: chat-date-headings.tsx. Галочка на компьютере появляется при наведении, у свёрнутого видна всегда. */
+[data-vid-date-heading] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 8px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+[data-vid-date-heading]:first-child { padding-top: 2px; }
+[data-vid-date-heading]:hover { color: var(--foreground); }
+[data-vid-date-heading] svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+[data-vid-date-heading][aria-expanded="false"] svg { transform: rotate(-90deg); }
+@media (hover: hover) {
+  [data-vid-date-heading][aria-expanded="true"]:not(:hover):not(:focus-visible) svg { opacity: 0; }
+}
+@media (max-width: 767px) and (pointer: coarse) {
+  [data-vid-date-heading] {
+    min-height: 36px;
+    align-items: flex-end;
+  }
+}
+[data-vid-date-hidden] { display: none !important; }
+
+/* Куда бросить чат, пока закреплённых нет. Прилипает к верху, чтобы быть на виду и в прокрученном списке. */
+[data-vid-pin-zone] {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  margin: 4px;
+  border: 1px dashed var(--sidebar-border);
+  border-radius: 6px;
+  background: var(--sidebar);
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+/* Зона или блок закреплённых под курсором: бросок закрепит чат. Линия и предпросмотр вложения bb в этот момент обещали бы другое, поэтому их не видно. */
+[data-vid-pin-over] {
+  outline: 1px solid var(--sidebar-ring);
+  outline-offset: -1px;
+  border-radius: 6px;
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+body:has([data-vid-pin-over]) [data-sidebar-drop-target-overlay],
+body:has([data-vid-pin-over]) [data-sidebar-nest-drop-preview],
+body:has([data-vid-pin-over]) [data-sidebar-reorder-placement]::before,
+body:has([data-vid-pin-over]) [data-sidebar-reorder-placement]::after { display: none !important; }
+/* Сплошная рамка bb «чат остаётся в этом списке» заметнее пунктира зоны и тоже выглядела бы целью. */
+body:has([data-vid-pin-zone]) [data-sidebar-drop-target="unchanged"] [data-sidebar-drop-target-overlay] { display: none; }

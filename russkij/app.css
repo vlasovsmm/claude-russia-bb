@@ -1,0 +1,5 @@
+/* Подсказки в поле ввода: редактор сам следит за своими атрибутами, поэтому текст меняем только стилями. */
+.ProseMirror p.is-editor-empty:first-child[data-placeholder="Ask anything."]::before { content: "Спросите что угодно." !important; }
+.ProseMirror p.is-editor-empty:first-child[data-placeholder="Ask anything. @ to mention files, folders, or sections"]::before { content: "Спросите что угодно. Через @ можно указать файлы и папки" !important; }
+.ProseMirror p.is-editor-empty:first-child[data-placeholder="Ask a follow-up"]::before { content: "Напишите сообщение" !important; }
+.ProseMirror p.is-editor-empty:first-child[data-placeholder="Ask for a follow-up. @ to mention files, folders, sections, or threads"]::before { content: "Напишите сообщение. Через @ можно указать файлы, папки и чаты" !important; }

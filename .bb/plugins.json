@@ -1,0 +1,19 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "claude-russia",
+  "plugins": [
+    {
+      "name": "vid",
+      "source": "./vid"
+    },
+    {
+      "name": "russkij",
+      "source": "./russkij"
+    },
+    {
+      "name": "perezapusk",
+      "source": "./perezapusk"
+    }
+  ]
+}
