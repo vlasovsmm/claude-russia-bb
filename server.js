@@ -2174,13 +2174,14 @@ var teksty_default = {
     "\u0448\u0430\u0433 1 \u043C\u0430\u043A": "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u0434\u043B\u044F Mac",
     "\u0448\u0430\u0433 1 windows": "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u0434\u043B\u044F Windows",
     "\u0448\u0430\u0433 2 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A": "\u0414\u043E\u0431\u0430\u0432\u044C\u0442\u0435 Claude Russia",
-    "\u0448\u0430\u0433 2 \u0442\u0435\u043A\u0441\u0442": "\u0412 bb \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 Settings, \u043F\u043E\u0442\u043E\u043C Plugins, \u043D\u0430\u0436\u043C\u0438\u0442\u0435 Add plugin \u0438 Install from source \u0438 \u0432\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0430\u0434\u0440\u0435\u0441. \u0420\u0443\u0441\u0441\u043A\u0438\u0439 \u0438\u043D\u0442\u0435\u0440\u0444\u0435\u0439\u0441 \u0432\u0441\u0442\u0430\u043D\u0435\u0442 \u0441\u0430\u043C",
+    "\u0448\u0430\u0433 2 \u0442\u0435\u043A\u0441\u0442": "\u0412 bb \u0441\u043B\u0435\u0432\u0430 \u043D\u0430\u0436\u043C\u0438\u0442\u0435 Plugins, \u043F\u043E\u0442\u043E\u043C \u0441\u0442\u0440\u0435\u043B\u043A\u0443 \u0440\u044F\u0434\u043E\u043C \u0441 New plugin \u0438 Install from source, \u0432\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0430\u0434\u0440\u0435\u0441 \u0438 \u043D\u0430\u0436\u043C\u0438\u0442\u0435 Install plugin. \u0420\u0443\u0441\u0441\u043A\u0438\u0439 \u0438\u043D\u0442\u0435\u0440\u0444\u0435\u0439\u0441 \u0432\u0441\u0442\u0430\u043D\u0435\u0442 \u0441\u0430\u043C",
     "\u043F\u043E\u043B\u0435 \u0430\u0434\u0440\u0435\u0441\u0430": "\u0410\u0434\u0440\u0435\u0441 Claude Russia \u0434\u043B\u044F bb",
     \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C: "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0430\u0434\u0440\u0435\u0441",
     \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E: "\u0410\u0434\u0440\u0435\u0441 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D",
     "\u043D\u0435 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043B\u043E\u0441\u044C": "\u041D\u0435 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043B\u043E\u0441\u044C, \u0432\u044B\u0434\u0435\u043B\u0438\u0442\u0435 \u0430\u0434\u0440\u0435\u0441 \u0432\u0440\u0443\u0447\u043D\u0443\u044E",
     "\u0448\u0430\u0433 3 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A": "\u0412\u043E\u0439\u0434\u0438\u0442\u0435 \u0438 \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0447\u0438",
-    "\u0448\u0430\u0433 3 \u0442\u0435\u043A\u0441\u0442": "\u0412 bb \u0441\u043B\u0435\u0432\u0430 \u0432\u043D\u0438\u0437\u0443 \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0412\u043E\u0439\u0442\u0438 \u0432 Claude Russia\xBB \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u043D\u0430 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u0439\u0441\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435. \u041F\u0438\u0448\u0438\u0442\u0435 \u043F\u043E-\u0440\u0443\u0441\u0441\u043A\u0438, \u043A\u0430\u043A \u0432 \u0447\u0430\u0442\u0435"
+    "\u0448\u0430\u0433 3 \u0442\u0435\u043A\u0441\u0442": "\u0412 bb \u0441\u043B\u0435\u0432\u0430 \u0432\u043D\u0438\u0437\u0443 \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \u0437\u043D\u0430\u0447\u043E\u043A \u0433\u043B\u043E\u0431\u0443\u0441\u0430, \u043F\u043E\u0442\u043E\u043C \xAB\u0412\u043E\u0439\u0442\u0438 \u0432 Claude Russia\xBB \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u043D\u0430 \u043E\u0442\u043A\u0440\u044B\u0432\u0448\u0435\u0439\u0441\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435. \u041A\u0430\u043A \u043E\u0442\u043A\u0440\u044B\u0442\u044C bb \u0441 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430 \u2014 \u0432 \u0438\u043D\u0441\u0442\u0440\u0443\u043A\u0446\u0438\u0438",
+    \u0438\u043D\u0441\u0442\u0440\u0443\u043A\u0446\u0438\u044F: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0438\u043D\u0441\u0442\u0440\u0443\u043A\u0446\u0438\u044E"
   },
   \u041D26\u0432: {
     \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A: "\u0414\u0440\u0443\u0433\u0438\u0435 \u0442\u0430\u0440\u0438\u0444\u044B"
@@ -2425,7 +2426,7 @@ function limitText(answer, now) {
 }
 
 // src/bbFiles.ts
-import { chmod as chmod2, mkdir as mkdir4, readdir as readdir2, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { chmod as chmod2, mkdir as mkdir4, readdir as readdir2, rm as rm3, rmdir, writeFile as writeFile4 } from "node:fs/promises";
 import { dirname as dirname3, join as join3 } from "node:path";
 var CLOSED = [
   "ANTHROPIC_API_KEY",
@@ -2469,17 +2470,39 @@ var BbFiles = class _BbFiles {
     await chmod2(this.home.env, 384);
   }
   /** Настройки набора слоем пользователя: Node хуков — программа bb, как у VS Code. Флаги наборов — в ccr-args. */
-  async write(fromServer, _cheapModel, pluginDirs) {
-    const env = { ...fromServer.env, ELECTRON_RUN_AS_NODE: "1" };
+  async write(fromServer, cheapModel, pluginDirs) {
+    const { availableModels: _menu, ...settings } = fromServer;
+    const env = { ...settings.env, ELECTRON_RUN_AS_NODE: "1" };
     await mkdir4(dirname3(this.home.userSettings), { recursive: true });
-    await writeFile4(this.home.userSettings, JSON.stringify({ ...fromServer, env }, null, 2));
+    await writeFile4(this.home.userSettings, JSON.stringify({ ...settings, env }, null, 2));
     await writeFile4(this.home.args, pluginDirs.flatMap((dir) => ["--plugin-dir", dir]).map((word) => `${word}
 `).join(""));
+    await mkdir4(this.home.places.usageSkill, { recursive: true });
+    await writeFile4(join3(this.home.places.usageSkill, "SKILL.md"), _BbFiles.usageSkill(cheapModel));
+  }
+  /** Навык usage заменяет встроенную /usage, которая за нашим адресом показывает доллары: модель зовёт инструмент
+      плагина limity и повторяет его строки. У VS Code строки приносит хук, у bb хука нет — есть свой инструмент. */
+  static usageSkill(model) {
+    return [
+      "---",
+      "name: usage",
+      "description: \u041B\u0438\u043C\u0438\u0442\u044B \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 Claude Russia",
+      "disable-model-invocation: true",
+      `model: ${model}`,
+      "---",
+      "",
+      "\u0412\u044B\u0437\u043E\u0432\u0438 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442 limity \u043E\u0442 Claude Russia \u0431\u0435\u0437 \u0430\u0440\u0433\u0443\u043C\u0435\u043D\u0442\u043E\u0432 \u0438 \u043E\u0442\u0432\u0435\u0442\u044C \u0440\u043E\u0432\u043D\u043E \u0435\u0433\u043E \u0441\u0442\u0440\u043E\u043A\u0430\u043C\u0438, \u0434\u043E\u0441\u043B\u043E\u0432\u043D\u043E \u0438 \u0432 \u0442\u043E\u043C \u0436\u0435",
+      "\u043F\u043E\u0440\u044F\u0434\u043A\u0435, \u043A\u0430\u0436\u0434\u0443\u044E \u0441\u0442\u0440\u043E\u043A\u0443 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u043C \u0430\u0431\u0437\u0430\u0446\u0435\u043C. \u041D\u0435 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0439 \u0441\u0432\u043E\u0438\u0445 \u0441\u043B\u043E\u0432, \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043A\u043E\u0432 \u0438 \u043E\u0444\u043E\u0440\u043C\u043B\u0435\u043D\u0438\u044F.",
+      ""
+    ].join("\n");
   }
   /** Выход: без ccr-env.json обёртка Claude не запускает, а bb без нашей переменной идёт к своему claude. */
   async erase() {
     await this.dropMerged();
     for (const path of [this.home.env, this.home.args, this.home.userSettings]) await rm3(path, { force: true });
+    await rm3(this.home.places.usageSkill, { recursive: true, force: true });
+    await rmdir(dirname3(this.home.places.usageSkill)).catch(() => {
+    });
   }
   async dropMerged() {
     const names = await readdir2(this.home.root).catch(() => []);
