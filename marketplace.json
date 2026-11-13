@@ -9,6 +9,7 @@
       "id": "claude-russia",
       "displayName": "Claude Russia",
       "description": "Claude из России без VPN: чаты bb идут через вашу подписку Claude Russia.",
+      "icon": "Sparkles",
       "author": {
         "name": "Claude Russia",
         "url": "https://claude-russia.ru"
@@ -24,6 +25,7 @@
       "id": "vid",
       "displayName": "Вид чата",
       "description": "Чинит прокрутку чата при видимом оглавлении, ограничивает высоту поля ответа, сворачивает список команд, показывает архивные чаты под списком чатов, делит список чатов заголовками дат, закрепляет чат перетаскиванием, держит в заголовке вкладки постоянное название bb добавляет значок своего промта у микрофона и держит полный доступ во всех чатах.",
+      "icon": "LayoutPanelLeft",
       "author": {
         "name": "Claude Russia",
         "url": "https://claude-russia.ru"
@@ -40,6 +42,7 @@
       "id": "russkij",
       "displayName": "Русский интерфейс",
       "description": "Показывает надписи bb на русском.",
+      "icon": "Languages",
       "author": {
         "name": "Claude Russia",
         "url": "https://claude-russia.ru"
@@ -56,6 +59,7 @@
       "id": "perezapusk",
       "displayName": "Перезагрузка без потерь",
       "description": "Прерванные перезапуском чаты продолжаются сами, а перезагрузка ждёт, пока чаты закончат работу.",
+      "icon": "RotateCcw",
       "author": {
         "name": "Claude Russia",
         "url": "https://claude-russia.ru"
