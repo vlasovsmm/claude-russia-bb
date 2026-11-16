@@ -1,4 +1,4 @@
-// Подключает стили вида чата, сворачивание команд, раздел архива, заголовки дат, зону закрепления, прикрепление файлов, постоянный заголовок вкладки, значок своего промта и полный доступ и убирает их при выключении плагина.
+// Подключает стили вида чата, сворачивание команд, раздел архива, заголовки дат, зону закрепления, архив свайпом, прикрепление файлов, постоянный заголовок вкладки, значок своего промта и полный доступ и убирает их при выключении плагина.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { ActivityCollapser } from "./activity-collapser";
 import { ArchiveSection } from "./archive-section";
@@ -7,6 +7,7 @@ import { FileAttach } from "./file-attach";
 import { FullAccess } from "./full-access";
 import { PinZone } from "./pin-drop-zone";
 import { PromtButton } from "./promt-button";
+import { SwipeToArchive } from "./swipe-archive";
 import { TabTitle } from "./tab-title";
 import "./app.css";
 
@@ -15,6 +16,7 @@ export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({ id: "polnyj-dostup", component: FullAccess });
   app.slots.experimental_appOverlay({ id: "daty-chatov", component: ChatDateHeadings });
   app.slots.experimental_appOverlay({ id: "zona-zakrepleniya", component: PinZone });
+  app.slots.experimental_appOverlay({ id: "arhiv-svajpom", component: SwipeToArchive });
   app.composer.customize({
     id: "moj-promt",
     actions: [{ id: "znachok-promta", component: PromtButton }],

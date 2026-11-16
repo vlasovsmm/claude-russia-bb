@@ -4,6 +4,7 @@ import {
   experimental_ThreadActionsMenu as ThreadActionsMenu,
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarThread,
+  type PluginThreadActionTarget,
   ThreadTitle,
   useBbContext,
   useBbNavigate,
@@ -50,10 +51,15 @@ function closePhoneMenu(link: Element): void {
   if (link.closest('[role="dialog"]')) document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.click();
 }
 
+/** Чат из списка в том виде, в каком его ждут действия bb с чатом. */
+export function threadActionTarget(thread: PluginSidebarThread): PluginThreadActionTarget {
+  const environment = thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null;
+  return { ...thread, environment };
+}
+
 function ArchivedRow({ thread }: { thread: PluginSidebarThread }) {
   const navigate = useBbNavigate();
   const isCurrent = useBbContext().threadId === thread.id;
-  const environment = thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null;
   return (
     <li className={`flex items-center rounded-md ${isCurrent ? "bg-state-active" : "hover:bg-state-hover"}`}>
       <a
@@ -71,7 +77,7 @@ function ArchivedRow({ thread }: { thread: PluginSidebarThread }) {
         <ThreadTitle threadId={thread.id} />
       </a>
       <ThreadActionsMenu
-        thread={{ ...thread, environment }}
+        thread={threadActionTarget(thread)}
         align="end"
         trigger={(props) => (
           <button {...props} type="button" aria-label="Действия с чатом" className={`${props.className ?? ""} flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-11`}>

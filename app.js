@@ -6,6 +6,7 @@ var __export = (target, all) => {
 
 // app.tsx
 import { definePluginApp, experimental_useRpcMutation, experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
+import { useEffect } from "react";
 
 // node_modules/@get-bb/plugin-sdk/dist/index.js
 var PLUGIN_CLI_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
@@ -19749,13 +19750,16 @@ var view = external_exports.object({
   url: external_exports.string().optional(),
   login: external_exports.string().optional(),
   note: external_exports.string().optional(),
+  reload: external_exports.boolean().optional(),
   words: external_exports.object({ title: external_exports.string(), text: external_exports.string(), login: external_exports.string(), logout: external_exports.string(), open: external_exports.string(), retry: external_exports.string() })
 });
 var menuContract = defineRpcContract({
   state: { input: external_exports.object({}).strict(), output: view, tags: () => [STATE_TAG] },
   login: { input: external_exports.object({}).strict(), output: view },
   logout: { input: external_exports.object({}).strict(), output: view },
-  retry: { input: external_exports.object({}).strict(), output: view }
+  retry: { input: external_exports.object({}).strict(), output: view },
+  /** Меню перезагружает окно по полю reload: просьба гаснет на сервере плагина. */
+  reloaded: { input: external_exports.object({}).strict(), output: view }
 });
 
 // app.tsx
@@ -19765,6 +19769,11 @@ function Menu() {
   const login = experimental_useRpcMutation({ contract: menuContract, method: "login" });
   const logout = experimental_useRpcMutation({ contract: menuContract, method: "logout" });
   const retry = experimental_useRpcMutation({ contract: menuContract, method: "retry" });
+  const reloaded = experimental_useRpcMutation({ contract: menuContract, method: "reloaded" });
+  const reload = data?.reload === true;
+  useEffect(() => {
+    if (reload) void reloaded.mutate({}).then(() => window.location.reload());
+  }, [reload]);
   if (!data) return null;
   const go = async () => {
     const page = window.open("about:blank", "_blank");

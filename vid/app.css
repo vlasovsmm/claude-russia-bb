@@ -168,3 +168,56 @@ body:has([data-vid-pin-over]) [data-sidebar-reorder-placement]::before,
 body:has([data-vid-pin-over]) [data-sidebar-reorder-placement]::after { display: none !important; }
 /* Сплошная рамка bb «чат остаётся в этом списке» заметнее пунктира зоны и тоже выглядела бы целью. */
 body:has([data-vid-pin-zone]) [data-sidebar-drop-target="unchanged"] [data-sidebar-drop-target-overlay] { display: none; }
+
+/*
+ * Чат в архив свайпом влево: swipe-archive.tsx. Без pan-y браузер забирает движение пальца вбок себе и обрывает жест, прокрутка списка остаётся за браузером.
+ * Плашка за строкой рисуется псевдоэлементами самой строки, разметку bb не трогаем. Сдвиг заведён длиной, иначе возврат строки на место не анимируется.
+ */
+@property --vid-swipe-shift {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+[data-sidebar-rename-row]:not([data-sidebar-sticky-group]) { touch-action: pan-y; }
+[data-sidebar-rename-row][data-vid-swipe] { translate: calc(-1 * var(--vid-swipe-shift)) 0; }
+[data-sidebar-rename-row][data-vid-swipe="back"],
+[data-sidebar-rename-row][data-vid-swipe="away"] { transition: --vid-swipe-shift 200ms ease-out; }
+/* У строки чата с раскрытыми вложенными bb рисует теми же псевдоэлементами заслонки высотой 0 над и под строкой: размеры плашки заданы полностью. */
+[data-sidebar-rename-row][data-vid-swipe]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 100%;
+  right: auto;
+  height: auto;
+  width: var(--vid-swipe-shift);
+  border-radius: 6px;
+  background: var(--sidebar-accent);
+}
+/* Значок и слово «В архив» прижаты к правому краю плашки. Значок — квадрат цвета текста, вырезанный маской по форме значка архива bb; пока плашка уже надписи, надпись обрезана по её левому краю. */
+[data-sidebar-rename-row][data-vid-swipe]::after {
+  content: "В архив";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: auto;
+  right: calc(12px - var(--vid-swipe-shift));
+  height: auto;
+  display: flex;
+  align-items: center;
+  padding-left: 24px;
+  font-size: 15px;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  background: linear-gradient(currentColor, currentColor) left center / 18px 18px no-repeat;
+  mask:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5'%3E%3Cpath d='M21 7H3V13C3 16.7712 3 18.6569 4.17157 19.8284C5.34315 21 7.22876 21 11 21H13C16.7712 21 18.6569 21 19.8284 19.8284C21 18.6569 21 16.7712 21 13V7Z'/%3E%3Cpath d='M21 7H3L4.2 5.4C5.08328 4.22229 5.52492 3.63344 6.15836 3.31672C6.7918 3 7.52786 3 9 3H15C16.4721 3 17.2082 3 17.8416 3.31672C18.4751 3.63344 18.9167 4.22229 19.8 5.4L21 7Z'/%3E%3Cpath d='M12 17L12 10.5M9 14.5C9.58984 15.1068 11.1597 17.5 12 17.5C12.8403 17.5 14.4102 15.1068 15 14.5'/%3E%3C/svg%3E") left center / 18px 18px no-repeat,
+    linear-gradient(#000, #000) right / calc(100% - 18px) 100% no-repeat;
+  clip-path: inset(0 0 0 calc(100% + 12px - var(--vid-swipe-shift)));
+}
+/* Дотянул до четверти строки: отпустишь — чат уйдёт в архив. */
+[data-sidebar-rename-row][data-vid-swipe="ready"]::before,
+[data-sidebar-rename-row][data-vid-swipe="away"]::before { background: var(--foreground); }
+[data-sidebar-rename-row][data-vid-swipe="ready"]::after,
+[data-sidebar-rename-row][data-vid-swipe="away"]::after { color: var(--background); }
