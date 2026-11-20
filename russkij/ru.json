@@ -1205,5 +1205,10 @@
  "threads": "чат.",
  "to see available devices.": ", чтобы увидеть доступные устройства.",
  "whatever you need": "то, что вам нужно",
- "will be archived too. Archived threads stay available and can be unarchived.": "— тоже в архив. Чаты из архива можно вернуть в любой момент."
+ "will be archived too. Archived threads stay available and can be unarchived.": "— тоже в архив. Чаты из архива можно вернуть в любой момент.",
+ "Images": "Картинки",
+ "Show images": "Показать картинки",
+ "Hide images": "Скрыть картинки",
+ "Thread Images": "Картинки в чате",
+ "Shows the images an agent opens: in the chat and in a gallery in the thread context card.": "Показывает картинки, которые открыл агент: в чате и галереей в карточке чата."
 }

@@ -5,11 +5,11 @@ var __export = (target, all) => {
 };
 
 // package.json
-var version = "1.0.5";
+var version = "1.0.6";
 
 // src/account.ts
-import { mkdir as mkdir8, writeFile as writeFile7 } from "node:fs/promises";
-import { dirname as dirname5 } from "node:path";
+import { mkdir as mkdir10, writeFile as writeFile8 } from "node:fs/promises";
+import { dirname as dirname8 } from "node:path";
 
 // ../../vscode/claude-russia/src/computer.ts
 import { execFile } from "node:child_process";
@@ -94,222 +94,279 @@ var HookCommands = class _HookCommands {
 
 // ../../vscode/claude-russia/src/kit.ts
 import { createHash } from "node:crypto";
-import { access, mkdir as mkdir3, readdir, readFile as readFile2, rename, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { access, mkdir as mkdir5, readdir as readdir2, readFile as readFile3, rename, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { join as join4 } from "node:path";
+
+// ../../vscode/claude-russia/src/chatLinks.ts
+import { link, lstat, mkdir as mkdir2, open, readdir } from "node:fs/promises";
+import { dirname as dirname2, join, resolve } from "node:path";
+var HEAD_BYTES = 64 * 1024;
+var FRESH_MS = 2 * 60 * 1e3;
+var SERVICE_ENTRYPOINT = /"entrypoint"\s*:\s*"sdk-/;
+var ENTRYPOINT = /"entrypoint"\s*:/;
+var SIDECHAIN = /"isSidechain"\s*:\s*true/;
+var ChatHead = class _ChatHead {
+  constructor(text) {
+    this.text = text;
+  }
+  text;
+  static async read(path) {
+    const file2 = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(HEAD_BYTES);
+      const { bytesRead } = await file2.read(buffer, 0, HEAD_BYTES, 0);
+      return new _ChatHead(buffer.toString("utf8", 0, bytesRead));
+    } finally {
+      await file2.close();
+    }
+  }
+  /** Чат человека: не пустой, первая строка не чат подагента, вид запуска не программный. Поле вида запуска
+      стоит не в первой строке (перед ним бывают служебные строки очереди), поэтому ищется первая строка с ним. */
+  get personal() {
+    const lines = this.text.split("\n");
+    if (!lines[0].trim() || SIDECHAIN.test(lines[0])) return false;
+    const marked = lines.find((line) => ENTRYPOINT.test(line));
+    return !marked || !SERVICE_ENTRYPOINT.test(marked);
+  }
+};
+var ProjectPass = class _ProjectPass {
+  constructor(from, to, options, now) {
+    this.from = from;
+    this.to = to;
+    this.options = options;
+    this.now = now;
+  }
+  from;
+  to;
+  options;
+  now;
+  async run() {
+    for (const entry of await ChatLinks.list(this.from)) {
+      if (entry.isFile() && entry.name.endsWith(".jsonl") && !entry.name.startsWith(".")) {
+        await this.chat(entry.name.slice(0, -".jsonl".length));
+      }
+    }
+  }
+  /** Файл чата и его папка сессии. Под тем же именем на другой стороне другой файл — чужое, не трогаем. */
+  async chat(id) {
+    const source = join(this.from, `${id}.jsonl`);
+    const target = join(this.to, `${id}.jsonl`);
+    const there = await lstat(target).catch(() => null);
+    if (there) {
+      const here = await lstat(source);
+      if (here.ino !== there.ino || here.dev !== there.dev) return;
+    } else {
+      if (await this.fresh(source)) return;
+      if (!(await ChatHead.read(source)).personal) return;
+      if (!await _ProjectPass.link(source, target)) return;
+    }
+    await this.session(join(this.from, id), join(this.to, id));
+  }
+  /** Файлы папки сессии по одному: туда докладываются новые выводы команд и чаты подагентов. */
+  async session(from, to) {
+    for (const entry of await ChatLinks.list(from)) {
+      const source = join(from, entry.name);
+      if (entry.isDirectory()) await this.session(source, join(to, entry.name));
+      else if (entry.isFile() && !await this.fresh(source)) await _ProjectPass.link(source, join(to, entry.name));
+    }
+  }
+  async fresh(path) {
+    return this.options.skipFresh && this.now - (await lstat(path)).mtimeMs < FRESH_MS;
+  }
+  /** Второе имя файлу. Имя занято — не перезаписываем (два окна VS Code разом). Связь не создаётся (EXDEV между
+      дисками, EPERM и ENOTSUP на FAT и сетевых папках) — файл остаётся на своей стороне, без копии.
+      Папка получателя создаётся, только когда её нет: при отказе связи пустых папок не остаётся. */
+  static async link(source, target) {
+    try {
+      await link(source, target);
+      return true;
+    } catch (error62) {
+      const code = error62.code;
+      if (code === "EEXIST") return true;
+      if (code !== "ENOENT") return false;
+    }
+    try {
+      await mkdir2(dirname2(target), { recursive: true });
+      await link(source, target);
+      return true;
+    } catch (error62) {
+      return error62.code === "EEXIST";
+    }
+  }
+};
+var ChatLinks = class _ChatLinks {
+  /** personalProjects — projects/ личной папки Claude человека, ourProjects — наша (Places.projects).
+      log — журнал расширения: туда пишется, на какой папке проход не удался. */
+  constructor(personalProjects, ourProjects, log = () => {
+  }) {
+    this.personalProjects = personalProjects;
+    this.ourProjects = ourProjects;
+    this.log = log;
+  }
+  personalProjects;
+  ourProjects;
+  log;
+  /** Связывает чаты в обе стороны. Не бросает: сбой одной папки проекта пишется в журнал, остальные идут дальше. */
+  async sync(options) {
+    try {
+      if (resolve(this.personalProjects) === resolve(this.ourProjects)) return;
+      const now = Date.now();
+      for (const project of await this.projects()) {
+        for (const [from, to] of [[this.personalProjects, this.ourProjects], [this.ourProjects, this.personalProjects]]) {
+          await new ProjectPass(join(from, project), join(to, project), options, now).run().catch((error62) => this.log(`\u0447\u0430\u0442\u044B ${join(from, project)} \u043D\u0435 \u0441\u0432\u044F\u0437\u0430\u043D\u044B: ${String(error62)}`));
+        }
+      }
+    } catch (error62) {
+      this.log(`\u0447\u0430\u0442\u044B \u043D\u0435 \u0441\u0432\u044F\u0437\u0430\u043D\u044B: ${String(error62)}`);
+    }
+  }
+  /** Папки проектов обеих сторон. */
+  async projects() {
+    const names = /* @__PURE__ */ new Set();
+    for (const side of [this.personalProjects, this.ourProjects]) {
+      for (const entry of await _ChatLinks.list(side)) if (entry.isDirectory()) names.add(entry.name);
+    }
+    return names;
+  }
+  /** Содержимое папки; папки нет — пусто. */
+  static async list(dir) {
+    try {
+      return await readdir(dir, { withFileTypes: true });
+    } catch (error62) {
+      if (error62.code === "ENOENT") return [];
+      throw error62;
+    }
+  }
+};
+
+// ../../vscode/claude-russia/src/claudeCodeConfig.ts
+import { mkdir as mkdir3, readFile as readFile2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname as dirname3, join as join2 } from "node:path";
+var OUR_ENV = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SKIP_AUTH_LOGIN", "DISABLE_TELEMETRY"];
+var FLAGS = ["hideOnboarding"];
+var USE_TERMINAL = "useTerminal";
+var OLD_ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"];
+var OLD_FLAGS = ["disableLoginPrompt"];
+var ENV = "environmentVariables";
+var KIND = 2;
+var OLD_WRAPPER = /ccr-claude(\.exe|\.cmd)?$/;
+var EnvList = class {
+  /** Наши записи вместо записей с теми же именами; что заменили — отдельно. */
+  static merge(current, ours) {
+    const names = new Set(ours.map((entry) => entry.name));
+    return {
+      next: [...current.filter((entry) => !names.has(entry.name)), ...ours],
+      replaced: current.filter((entry) => names.has(entry.name))
+    };
+  }
+  /** Без имён names, с возвращёнными записями человека с этими именами. */
+  static restore(current, before, names) {
+    return [
+      ...current.filter((entry) => !names.includes(entry.name)),
+      ...before.filter((entry) => names.includes(entry.name))
+    ];
+  }
+};
+var ClaudeCodeConfig = class _ClaudeCodeConfig {
+  constructor(store, beforePath) {
+    this.store = store;
+    this.beforePath = beforePath;
+  }
+  store;
+  beforePath;
+  /** Ставит наши значения. Прежние запоминаются один раз, при первом подключении; записи версий до
+      1.0.2 и обёртка версий до 1.0.7 убираются. terminalFindable ложь — окно в режиме «Use Terminal» не найдёт нашу
+      команду claude, и режим тихо выключается: Claude открывается в боковой панели. */
+  async apply(env, terminalFindable = true) {
+    let before = await this.before();
+    let current = this.env();
+    if (before && _ClaudeCodeConfig.old(before)) {
+      current = EnvList.restore(current, before.env, OLD_ENV);
+      for (const key of OLD_FLAGS) await this.store.set(key, before.flags[key]);
+      before = { kind: KIND, env: before.env.filter((entry) => !OLD_ENV.includes(entry.name)), flags: before.flags };
+    }
+    const { next, replaced } = EnvList.merge(current, env);
+    if (before) {
+      const known = new Set(before.env.map((entry) => entry.name));
+      const ours = new Map(env.map((entry) => [entry.name, entry.value]));
+      before = { ...before, env: [
+        ...before.env,
+        ...replaced.filter((entry) => !known.has(entry.name) && ours.get(entry.name) !== entry.value)
+      ] };
+    }
+    before ??= { kind: KIND, env: replaced, flags: Object.fromEntries(FLAGS.map((key) => [key, this.store.get(key)])) };
+    const terminalOff = !terminalFindable && this.store.get(USE_TERMINAL) === true;
+    if (terminalOff && before.flags[USE_TERMINAL] === void 0) before = { ...before, flags: { ...before.flags, [USE_TERMINAL]: true } };
+    await mkdir3(dirname3(this.beforePath), { recursive: true });
+    await writeFile2(this.beforePath, JSON.stringify(before, null, 2));
+    await this.retireOldWrapper(before);
+    await this.store.set(ENV, next);
+    await this.store.set("hideOnboarding", true);
+    if (terminalOff) await this.store.set(USE_TERMINAL, false);
+  }
+  /** Возвращает как было до нас. Файла прежних значений нет — мы ничего не ставили, трогать нечего.
+      keep — запись о прежнем ещё нужна: профили VS Code с общей папкой данных делят одну запись. */
+  async restore(keep = false) {
+    const before = await this.before();
+    if (!before) return;
+    const old = _ClaudeCodeConfig.old(before);
+    const env = EnvList.restore(this.env(), before.env, old ? [...OUR_ENV, ...OLD_ENV] : OUR_ENV);
+    await this.store.set(ENV, env.length ? env : void 0);
+    for (const key of old ? [...FLAGS, ...OLD_FLAGS] : FLAGS) await this.store.set(key, before.flags[key]);
+    if (before.flags[USE_TERMINAL] !== void 0) await this.store.set(USE_TERMINAL, before.flags[USE_TERMINAL]);
+    await this.retireOldWrapper(before);
+    if (!keep) await rm2(this.beforePath, { force: true });
+  }
+  /** Папка настроек Claude человека без нас: его прежний CLAUDE_CONFIG_DIR из записи о прежнем, иначе из окружения
+      VS Code, иначе ~/.claude. Запись о прежнем жива, пока подключено: restore() её стирает. */
+  static async personal(beforePath, env = process.env, home = homedir()) {
+    const before = await _ClaudeCodeConfig.read(beforePath);
+    return before?.env.find((entry) => entry.name === "CLAUDE_CONFIG_DIR")?.value || env.CLAUDE_CONFIG_DIR || join2(home, ".claude");
+  }
+  /** Подключено ли расширение в этих настройках: в переменных окна стоит наша папка настроек. */
+  ours(configDir) {
+    return this.env().some((entry) => entry.name === "CLAUDE_CONFIG_DIR" && entry.value === configDir);
+  }
+  /** Снимает обёртку версий до 1.0.7 в этих настройках и возвращает обёртку человека, если она у него была. Решает
+      значение настройки, а не вид записи: запись общая у профилей с общей папкой данных, настройки — у каждого
+      свои. Те версии открывали Claude командой «Open in Side Bar», а она переключала claudeCode.preferredLocation
+      на боковую панель: настройка возвращается к умолчанию окна — новый чат во вкладке. */
+  async retireOldWrapper(before) {
+    const wrapper = this.store.get("claudeProcessWrapper");
+    if (typeof wrapper !== "string" || !OLD_WRAPPER.test(wrapper)) return;
+    await this.store.set("claudeProcessWrapper", before.flags.claudeProcessWrapper);
+    if (this.store.get("preferredLocation") === "sidebar") await this.store.set("preferredLocation", void 0);
+  }
+  static old(before) {
+    return before.kind !== KIND;
+  }
+  env() {
+    const value = this.store.get(ENV);
+    return Array.isArray(value) ? value : [];
+  }
+  before() {
+    return _ClaudeCodeConfig.read(this.beforePath);
+  }
+  static async read(path) {
+    try {
+      return JSON.parse(await readFile2(path, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+};
 
 // ../../vscode/claude-russia/src/tar.ts
-import { chmod, mkdir as mkdir2, writeFile as writeFile2 } from "node:fs/promises";
-import { dirname as dirname2, isAbsolute, join, normalize, sep } from "node:path";
+import { chmod, mkdir as mkdir4, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname5, isAbsolute, join as join3, normalize, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
-var BLOCK = 512;
-var BadArchive = class extends Error {
-};
-var TarGz = class _TarGz {
-  constructor(gz) {
-    this.gz = gz;
-  }
-  gz;
-  /** Раскладывает архив в папку to и возвращает имена верхнего уровня, которые он создал. */
-  async extract(to) {
-    const top = /* @__PURE__ */ new Set();
-    for (const entry of this.entries()) {
-      const name = _TarGz.safe(entry.name);
-      if (!name) continue;
-      top.add(name.split("/")[0]);
-      const path = join(to, ...name.split("/"));
-      if (entry.type === "5") {
-        await mkdir2(path, { recursive: true });
-      } else if (entry.type === "0" || entry.type === "\0" || entry.type === "") {
-        await mkdir2(dirname2(path), { recursive: true });
-        await writeFile2(path, entry.body);
-        await chmod(path, entry.mode & 73 ? 493 : 420);
-      } else {
-        throw new BadArchive(`\u0432 \u0430\u0440\u0445\u0438\u0432\u0435 \u0441\u0441\u044B\u043B\u043A\u0430 \u0438\u043B\u0438 \u043E\u0441\u043E\u0431\u044B\u0439 \u0444\u0430\u0439\u043B: ${name}`);
-      }
-    }
-    return [...top];
-  }
-  /** Имя записи без ./ в начале; выход за папку назначения — ошибка. */
-  static safe(name) {
-    const clean = name.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+$/, "");
-    if (!clean || clean === ".") return "";
-    const norm = normalize(clean).split(sep).join("/");
-    if (isAbsolute(clean) || /^[a-zA-Z]:/.test(clean) || norm === ".." || norm.startsWith("../")) {
-      throw new BadArchive(`\u043F\u0443\u0442\u044C \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0437\u0430 \u043F\u0430\u043F\u043A\u0443 \u043D\u0430\u0431\u043E\u0440\u0430: ${name}`);
-    }
-    return norm;
-  }
-  *entries() {
-    const tar = gunzipSync(this.gz);
-    let offset = 0;
-    let longName = "";
-    while (offset + BLOCK <= tar.length) {
-      const head = tar.subarray(offset, offset + BLOCK);
-      if (head.every((byte) => byte === 0)) break;
-      const size = parseInt(_TarGz.text(head, 124, 12).trim() || "0", 8);
-      const type = _TarGz.text(head, 156, 1);
-      const body = tar.subarray(offset + BLOCK, offset + BLOCK + size);
-      offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
-      if (type === "x") {
-        const path = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString("utf8"));
-        if (path) longName = path[1];
-        continue;
-      }
-      if (type === "L") {
-        longName = body.toString("utf8").replace(/\0+$/, "");
-        continue;
-      }
-      if (type === "g") continue;
-      const prefix = _TarGz.text(head, 345, 155);
-      const short = _TarGz.text(head, 0, 100);
-      const name = longName || (prefix ? `${prefix}/${short}` : short);
-      longName = "";
-      yield { name, type, mode: parseInt(_TarGz.text(head, 100, 8).trim() || "644", 8), body };
-    }
-  }
-  static text(head, at, length) {
-    const raw = head.subarray(at, at + length);
-    const end = raw.indexOf(0);
-    return raw.subarray(0, end === -1 ? raw.length : end).toString("utf8");
-  }
-};
 
-// ../../vscode/claude-russia/src/kit.ts
-var HOOKS_SOURCE = "hooks.source.json";
-var Kit = class _Kit {
-  constructor(places, hooks, files) {
-    this.places = places;
-    this.hooks = hooks;
-    this.files = files;
-  }
-  places;
-  hooks;
-  files;
-  /** Сверяет набор с сервером и раскладывает изменившееся; возвращает ответ сервера. */
-  async sync(server) {
-    const answer = await server.kit();
-    const p = this.places;
-    await mkdir3(p.config, { recursive: true });
-    await writeFile3(p.claudeMd, answer.claude_md);
-    const state = await this.state();
-    const wanted = new Set(answer.bundles.map((bundle) => bundle.name));
-    for (const name of Object.keys(state)) {
-      if (!wanted.has(name)) {
-        await this.remove(name, state[name]);
-        delete state[name];
-      }
-    }
-    for (const bundle of answer.bundles) {
-      if (state[bundle.name]?.sha256 === bundle.sha256 && await this.present(bundle.name, state[bundle.name])) continue;
-      const gz = await server.bundle(bundle.name);
-      if (state[bundle.name]) await this.remove(bundle.name, state[bundle.name]);
-      state[bundle.name] = await this.lay(bundle, gz);
-      await writeFile3(p.kitState, JSON.stringify(state, null, 2));
-    }
-    await writeFile3(p.kitState, JSON.stringify(state, null, 2));
-    const plugins = answer.bundles.filter((bundle) => bundle.kind === "plugin").map((bundle) => p.plugin(bundle.name));
-    for (const dir of plugins) await this.rewriteHooks(dir);
-    await this.files.write(answer.settings, answer.cheap_model, plugins);
-    return answer;
-  }
-  /** Стирает всё, что разложило расширение; projects/ и прочие файлы Claude Code остаются. */
-  async erase() {
-    const p = this.places;
-    for (const [name, laid] of Object.entries(await this.state())) await this.remove(name, laid);
-    for (const path of [
-      p.plugins,
-      p.usageSkill,
-      p.claudeMd,
-      p.settings,
-      p.mcp,
-      p.args,
-      p.kitState,
-      p.oldWrapperSh,
-      ...p.ownTerminal ? [p.terminal] : []
-    ]) {
-      await rm2(path, { recursive: true, force: true });
-    }
-  }
-  /** Распаковывает во временную папку и переносит на место одним переименованием. */
-  async lay(bundle, gz) {
-    const temp = join2(this.places.root, `.raspakovka-${bundle.name}`);
-    await rm2(temp, { recursive: true, force: true });
-    await mkdir3(temp, { recursive: true });
-    const top = await new TarGz(gz).extract(temp);
-    if (await _Kit.digest(temp) !== bundle.sha256.toLowerCase()) {
-      await rm2(temp, { recursive: true, force: true });
-      throw new Error(`\u043D\u0430\u0431\u043E\u0440 ${bundle.name}: \u043E\u0442\u043F\u0435\u0447\u0430\u0442\u043E\u043A \u043D\u0435 \u0441\u043E\u0448\u0451\u043B\u0441\u044F`);
-    }
-    if (bundle.kind === "plugin") {
-      await mkdir3(this.places.plugins, { recursive: true });
-      await rm2(this.places.plugin(bundle.name), { recursive: true, force: true });
-      await rename(temp, this.places.plugin(bundle.name));
-      const hooks = join2(this.places.plugin(bundle.name), "hooks");
-      if (await _Kit.exists(join2(hooks, "hooks.json"))) await rename(join2(hooks, "hooks.json"), join2(hooks, HOOKS_SOURCE));
-      return { sha256: bundle.sha256, kind: bundle.kind, dirs: [] };
-    }
-    await mkdir3(this.places.skills, { recursive: true });
-    for (const name of top) {
-      await rm2(join2(this.places.skills, name), { recursive: true, force: true });
-      await rename(join2(temp, name), join2(this.places.skills, name));
-    }
-    await rm2(temp, { recursive: true, force: true });
-    return { sha256: bundle.sha256, kind: bundle.kind, dirs: top };
-  }
-  /** hooks.json набора собирается из исходного заново: путь к бинарю VS Code мог смениться. */
-  async rewriteHooks(dir) {
-    const source = join2(dir, "hooks", HOOKS_SOURCE);
-    if (!await _Kit.exists(source)) return;
-    const rewritten = this.hooks.rewrite(JSON.parse(await readFile2(source, "utf8")));
-    await writeFile3(join2(dir, "hooks", "hooks.json"), JSON.stringify(rewritten, null, 2));
-  }
-  /** Папки, которые разложил набор: папка плагина или папки навыков. */
-  paths(name, laid) {
-    return laid.kind === "plugin" ? [this.places.plugin(name)] : laid.dirs.map((dir) => join2(this.places.skills, dir));
-  }
-  async remove(name, laid) {
-    for (const path of this.paths(name, laid)) await rm2(path, { recursive: true, force: true });
-  }
-  async present(name, laid) {
-    for (const path of this.paths(name, laid)) if (!await _Kit.exists(path)) return false;
-    return true;
-  }
-  async state() {
-    try {
-      return JSON.parse(await readFile2(this.places.kitState, "utf8"));
-    } catch {
-      return {};
-    }
-  }
-  /** Отпечаток папки, как у сервера (cc_launch/nabor.py, Bundle.digest): sha256 по файлам в порядке
-      пути (по частям пути, как sorted() у Path), для каждого — путь, нулевой байт, содержимое. */
-  static async digest(dir) {
-    const files = [];
-    const walk = async (parts) => {
-      for (const entry of await readdir(join2(dir, ...parts), { withFileTypes: true })) {
-        if (entry.isDirectory()) await walk([...parts, entry.name]);
-        else if (entry.isFile()) files.push([...parts, entry.name]);
-      }
-    };
-    await walk([]);
-    files.sort((a, b) => {
-      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-      return a.length - b.length;
-    });
-    const hash2 = createHash("sha256");
-    for (const parts of files) {
-      hash2.update(Buffer.concat([Buffer.from(parts.join("/")), Buffer.from([0])]));
-      hash2.update(await readFile2(join2(dir, ...parts)));
-    }
-    return hash2.digest("hex");
-  }
-  static async exists(path) {
-    return access(path).then(() => true, () => false);
-  }
-};
+// ../../vscode/claude-russia/src/trouble.ts
+import { dirname as dirname4 } from "node:path";
 
 // ../../vscode/claude-russia/package.json
-var version2 = "1.0.7";
+var version2 = "1.0.9";
 
 // ../../vscode/claude-russia/src/server.ts
 var DeviceGone = class extends Error {
@@ -318,13 +375,15 @@ var DeviceGone = class extends Error {
   }
 };
 var Refused = class extends Error {
-  constructor(status, code, message) {
-    super(message);
+  constructor(status, code = "", said = "") {
+    super(said || `HTTP ${status}`);
     this.status = status;
     this.code = code;
+    this.said = said;
   }
   status;
   code;
+  said;
 };
 var Server = class {
   /** base — адрес сервиса без / в конце, token — ключ устройства (у входа его ещё нет), client — версия программы
@@ -377,16 +436,13 @@ var Server = class {
     const answer = await fetch(this.base + path, { method, headers, body: payload });
     const raw = Buffer.from(await answer.arrayBuffer());
     if (answer.ok) return raw;
-    let code = "";
-    let message = `HTTP ${answer.status}`;
+    let said = {};
     try {
-      const said = JSON.parse(raw.toString("utf8"));
-      code = said.code ?? "";
-      message = said.message || message;
+      said = JSON.parse(raw.toString("utf8"));
     } catch {
     }
-    if (answer.status === 401 && code === "DEVICE_GONE") throw new DeviceGone();
-    throw new Refused(answer.status, code, message);
+    if (answer.status === 401 && said.code === "DEVICE_GONE") throw new DeviceGone();
+    throw new Refused(answer.status, said.code ?? "", said.message ?? "");
   }
 };
 
@@ -1427,7 +1483,9 @@ var teksty_default = {
     "\u0442\u0435\u043A\u0441\u0442 \u043D\u0438\u0436\u0435 \u0431\u0435\u0437 \u043A\u0430\u0440\u0442\u044B": "\u041E\u043F\u043B\u0430\u0442\u0438\u0442\u0435 \u0441\u0435\u0433\u043E\u0434\u043D\u044F 14 900 \u20BD \u043D\u0430 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 \u042EKassa, \u0438 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 \xAB\u041F\u0440\u043E\u0444\u0438\xBB \u0437\u0430\u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443. \u041E\u0441\u0442\u0430\u0432\u0448\u0438\u0435\u0441\u044F 20 \u0434\u043D\u0435\u0439 \u043D\u044B\u043D\u0435\u0448\u043D\u0435\u0439 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 \u043D\u0435 \u043F\u0435\u0440\u0435\u043D\u043E\u0441\u044F\u0442\u0441\u044F. \u0414\u0430\u043B\u044C\u0448\u0435 14 900 \u20BD/\u043C\u0435\u0441, \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0435 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435 10 \u0434\u0435\u043A\u0430\u0431\u0440\u044F.",
     "\u0442\u0435\u043A\u0441\u0442 \u043C\u0435\u0441\u044F\u0446": "\u041E\u043F\u043B\u0430\u0442\u0438\u0442\u0435 \u0441\u0435\u0433\u043E\u0434\u043D\u044F 14 900 \u20BD \u0441 \u043A\u0430\u0440\u0442\u044B \u2022\u2022\u2022\u2022 4417, \u0438 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 \xAB\u041F\u0440\u043E\u0444\u0438\xBB \u0437\u0430\u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443. \u0414\u0430\u043B\u044C\u0448\u0435 14 900 \u20BD/\u043C\u0435\u0441, \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0435 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435 10 \u0434\u0435\u043A\u0430\u0431\u0440\u044F.",
     "\u0442\u0435\u043A\u0441\u0442 \u043C\u0435\u0441\u044F\u0446 \u0431\u0435\u0437 \u043A\u0430\u0440\u0442\u044B": "\u041E\u043F\u043B\u0430\u0442\u0438\u0442\u0435 \u0441\u0435\u0433\u043E\u0434\u043D\u044F 14 900 \u20BD \u043D\u0430 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 \u042EKassa, \u0438 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 \xAB\u041F\u0440\u043E\u0444\u0438\xBB \u0437\u0430\u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443. \u0414\u0430\u043B\u044C\u0448\u0435 14 900 \u20BD/\u043C\u0435\u0441, \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0435 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435 10 \u0434\u0435\u043A\u0430\u0431\u0440\u044F.",
-    "\u043A\u043D\u043E\u043F\u043A\u0430, \u0437\u0430\u043A\u043E\u043D\u0447\u0438\u043B\u0430\u0441\u044C": "\u041E\u0444\u043E\u0440\u043C\u0438\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443 \xAB\u041F\u0440\u043E\u0444\u0438\xBB"
+    "\u043A\u043D\u043E\u043F\u043A\u0430, \u0437\u0430\u043A\u043E\u043D\u0447\u0438\u043B\u0430\u0441\u044C": "\u041E\u0444\u043E\u0440\u043C\u0438\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0443 \xAB\u041F\u0440\u043E\u0444\u0438\xBB",
+    \u043F\u0440\u0435\u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0430: "\u0432\u0441\u0435 \u043F\u0440\u0435\u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0430 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438 \xAB\u041F\u0440\u043E\u0444\u0438\xBB: \u043B\u0438\u043C\u0438\u0442 \u0432 3 \u0440\u0430\u0437\u0430 \u0431\u043E\u043B\u044C\u0448\u0435 \u0432\u0430\u0448\u0435\u0433\u043E \u0438 \u0442\u0440\u0438 \u0432\u0445\u043E\u0434\u0430, \u043E\u0434\u0438\u043D \u0438\u0437 \u043D\u0438\u0445 \u0432\u0430\u0448",
+    "\u043F\u0440\u0435\u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0430, \u043C\u0435\u043D\u044C\u0448\u0435 \u043D\u0435\u0434\u0435\u043B\u0438": "\u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 \xAB\u041F\u0440\u043E\u0444\u0438\xBB: \u0442\u0440\u0438 \u0432\u0445\u043E\u0434\u0430, \u043E\u0434\u0438\u043D \u0438\u0437 \u043D\u0438\u0445 \u0432\u0430\u0448, \u0430 \u043D\u0435\u0434\u0435\u043B\u044C\u043D\u044B\u0439 \u043B\u0438\u043C\u0438\u0442 \u0434\u043E \u043A\u043E\u043D\u0446\u0430 \u0441\u0440\u043E\u043A\u0430 \u0440\u0430\u0441\u0442\u0451\u0442 \u043D\u0430 \u0440\u0430\u0437\u043D\u0438\u0446\u0443 \u0442\u0430\u0440\u0438\u0444\u043E\u0432 \u0437\u0430 \u044D\u0442\u0438 \u0434\u043D\u0438"
   },
   \u041D28: {
     \u043A\u043D\u043E\u043F\u043A\u0430: "\u041F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u043C\u2026"
@@ -2071,6 +2129,8 @@ var teksty_default = {
     "\u0436\u0434\u0451\u043C \u0432\u0445\u043E\u0434": "\u0416\u0434\u0451\u043C, \u043A\u043E\u0433\u0434\u0430 \u0432\u044B \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435",
     "\u0432\u0445\u043E\u0434 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D": "\u0412\u0445\u043E\u0434 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B\u0438 \u0437\u0430 10 \u043C\u0438\u043D\u0443\u0442. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0412\u043E\u0439\u0442\u0438\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u043F\u0440\u043E\u0431\u043E\u0432\u0430\u0442\u044C \u0435\u0449\u0451 \u0440\u0430\u0437.",
     "\u043D\u0435\u0442 \u0441\u0432\u044F\u0437\u0438": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u0441\u0432\u044F\u0437\u0430\u0442\u044C\u0441\u044F \u0441 Claude Russia. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442 \u0438 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
+    "\u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u0430\u043B\u043E\u0441\u044C": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u0437\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B Claude Russia \u043D\u0430 \u044D\u0442\u043E\u0442 \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E\u0435 \u043C\u0435\u0441\u0442\u043E \u0438 \u043F\u0440\u0430\u0432\u0430 \u043D\u0430 \u043F\u0430\u043F\u043A\u0443 {\u043F\u0443\u0442\u044C} \u0438 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
+    "\u0447\u0442\u043E-\u0442\u043E \u043D\u0435 \u0442\u0430\u043A": "\u0427\u0442\u043E-\u0442\u043E \u043F\u043E\u0448\u043B\u043E \u043D\u0435 \u0442\u0430\u043A \u043F\u0440\u0438 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043A\u0435 Claude. \u041D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u0432 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0443 \u0438 \u043F\u0440\u0438\u043B\u043E\u0436\u0438\u0442\u0435 \u044D\u0442\u043E\u0442 \u0442\u0435\u043A\u0441\u0442: {\u0442\u0435\u043A\u0441\u0442}",
     "\u043E\u043A\u043D\u043E \u043D\u0435 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043B\u0435\u043D\u043E": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u0438\u0442\u044C Claude Code \u043A \u0440\u0430\u0431\u043E\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 Claude Russia. \u041F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 VS Code, \u0430 \u0435\u0441\u043B\u0438 \u043D\u0435 \u043F\u043E\u043C\u043E\u0436\u0435\u0442, \u043F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0435 \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435 Claude Code \u0438 \u043D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u0432 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0443.",
     "\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u0435\u043C Claude Code": "\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u0435\u043C Claude Code",
     "\u0441\u0442\u0430\u0432\u0438\u043C Claude Code": "\u0421\u0442\u0430\u0432\u0438\u043C Claude Code",
@@ -2255,7 +2315,6 @@ var teksty_default = {
     \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E: "bb \u043E\u0442\u043A\u043B\u044E\u0447\u0451\u043D \u043E\u0442 Claude Russia. \u0427\u0442\u043E\u0431\u044B \u0441\u043D\u043E\u0432\u0430 \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C \u0441 Claude, \u0432\u043E\u0439\u0434\u0438\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
     "\u043B\u0438\u043C\u0438\u0442\u044B \u043D\u0435 \u043F\u0440\u0438\u0448\u043B\u0438": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u0443\u0437\u043D\u0430\u0442\u044C \u043B\u0438\u043C\u0438\u0442\u044B. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437 \u0447\u0435\u0440\u0435\u0437 \u043C\u0438\u043D\u0443\u0442\u0443.",
     "\u0432\u0445\u043E\u0434 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D": "\u0412\u0445\u043E\u0434 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B\u0438 \u0437\u0430 10 \u043C\u0438\u043D\u0443\u0442. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0412\u043E\u0439\u0442\u0438\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u043F\u0440\u043E\u0431\u043E\u0432\u0430\u0442\u044C \u0435\u0449\u0451 \u0440\u0430\u0437.",
-    "\u043D\u0435\u0442 \u0441\u0432\u044F\u0437\u0438": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u0441\u0432\u044F\u0437\u0430\u0442\u044C\u0441\u044F \u0441 Claude Russia. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442 \u0438 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
     "\u043D\u0435 \u043F\u043E\u0441\u0442\u0430\u0432\u0438\u043B\u0441\u044F": "\u041D\u0435 \u043F\u043E\u043B\u0443\u0447\u0438\u043B\u043E\u0441\u044C \u043F\u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C Claude Code. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C\xBB, \u0430 \u0435\u0441\u043B\u0438 \u043D\u0435 \u043F\u043E\u043C\u043E\u0436\u0435\u0442, \u043D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u0432 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0443.",
     \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C: "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C",
     "\u043D\u0435\u0442 \u0432\u0445\u043E\u0434\u0430": "Claude Russia: \u0447\u0442\u043E\u0431\u044B \u0447\u0430\u0442 \u0437\u0430\u0440\u0430\u0431\u043E\u0442\u0430\u043B, \u0432\u043E\u0439\u0434\u0438\u0442\u0435 \u0432 Claude Russia \u0432 \u043C\u0435\u043D\u044E bb \u0441\u043B\u0435\u0432\u0430 \u0432\u043D\u0438\u0437\u0443.",
@@ -2426,9 +2485,289 @@ function limitText(answer, now) {
   return [teksty.t("\u041B14", "\u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A"), ...limitLines(answer, now)];
 }
 
+// ../../vscode/claude-russia/src/trouble.ts
+var Said = class extends Error {
+};
+var Offline = class extends Error {
+};
+var NET = /* @__PURE__ */ new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT"
+]);
+var SHORT = 300;
+var Trouble = class _Trouble {
+  /** secrets — пропуск и ключ устройства: из текста ошибки они вырезаются до показа. */
+  constructor(error62, secrets = []) {
+    this.error = error62;
+    this.secrets = secrets;
+  }
+  error;
+  secrets;
+  get kind() {
+    const error62 = this.error;
+    if (error62 instanceof Said) return "said";
+    if (error62 instanceof Refused) return error62.said ? "said" : "offline";
+    if (error62 instanceof Offline || _Trouble.net(error62)) return "offline";
+    if (error62 instanceof TypeError && error62.cause !== void 0) return "offline";
+    if (_Trouble.fs(error62)) return "disk";
+    return "other";
+  }
+  /** Что показать человеку. */
+  text() {
+    switch (this.kind) {
+      case "said":
+        return this.error.message;
+      case "offline":
+        return say.note("\u043D\u0435\u0442 \u0441\u0432\u044F\u0437\u0438");
+      case "disk":
+        return say.note("\u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u0430\u043B\u043E\u0441\u044C").replace("{\u043F\u0443\u0442\u044C}", () => this.folder());
+      case "other":
+        return say.note("\u0447\u0442\u043E-\u0442\u043E \u043D\u0435 \u0442\u0430\u043A").replace("{\u0442\u0435\u043A\u0441\u0442}", () => this.detail);
+    }
+  }
+  /** Папка, в которую не получилось записать: у ошибки ОС путь к файлу или к самой папке. */
+  folder() {
+    const path = this.error.path ?? "";
+    return this.error.syscall === "mkdir" ? path : dirname4(path);
+  }
+  /** Первая строка ошибки без пропуска и ключа: её человек прикладывает к письму в поддержку. */
+  get detail() {
+    let text = this.error instanceof Error ? this.error.message : String(this.error);
+    for (const secret of this.secrets.filter(Boolean)) text = text.split(secret).join("\u2026");
+    text = text.split("\n")[0].trim();
+    return text.length > SHORT ? `${text.slice(0, SHORT)}\u2026` : text;
+  }
+  static net(error62) {
+    for (let one = error62, depth = 0; one && depth < 3; one = one.cause, depth++) {
+      if (NET.has(one.code ?? "")) return true;
+    }
+    return false;
+  }
+  /** Ошибка файловой системы: у неё есть код ОС, вызов и путь. */
+  static fs(error62) {
+    const one = error62;
+    return Boolean(one?.code && one.syscall && one.path);
+  }
+};
+
+// ../../vscode/claude-russia/src/tar.ts
+var BLOCK = 512;
+var BadArchive = class extends Said {
+};
+var TarGz = class _TarGz {
+  constructor(gz) {
+    this.gz = gz;
+  }
+  gz;
+  /** Раскладывает архив в папку to и возвращает имена верхнего уровня, которые он создал. */
+  async extract(to) {
+    const top = /* @__PURE__ */ new Set();
+    for (const entry of this.entries()) {
+      const name = _TarGz.safe(entry.name);
+      if (!name) continue;
+      top.add(name.split("/")[0]);
+      const path = join3(to, ...name.split("/"));
+      if (entry.type === "5") {
+        await mkdir4(path, { recursive: true });
+      } else if (entry.type === "0" || entry.type === "\0" || entry.type === "") {
+        await mkdir4(dirname5(path), { recursive: true });
+        await writeFile3(path, entry.body);
+        await chmod(path, entry.mode & 73 ? 493 : 420);
+      } else {
+        throw new BadArchive(`\u0432 \u0430\u0440\u0445\u0438\u0432\u0435 \u0441\u0441\u044B\u043B\u043A\u0430 \u0438\u043B\u0438 \u043E\u0441\u043E\u0431\u044B\u0439 \u0444\u0430\u0439\u043B: ${name}`);
+      }
+    }
+    return [...top];
+  }
+  /** Имя записи без ./ в начале; выход за папку назначения — ошибка. */
+  static safe(name) {
+    const clean = name.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+    if (!clean || clean === ".") return "";
+    const norm = normalize(clean).split(sep).join("/");
+    if (isAbsolute(clean) || /^[a-zA-Z]:/.test(clean) || norm === ".." || norm.startsWith("../")) {
+      throw new BadArchive(`\u043F\u0443\u0442\u044C \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0437\u0430 \u043F\u0430\u043F\u043A\u0443 \u043D\u0430\u0431\u043E\u0440\u0430: ${name}`);
+    }
+    return norm;
+  }
+  *entries() {
+    const tar = gunzipSync(this.gz);
+    let offset = 0;
+    let longName = "";
+    while (offset + BLOCK <= tar.length) {
+      const head = tar.subarray(offset, offset + BLOCK);
+      if (head.every((byte) => byte === 0)) break;
+      const size = parseInt(_TarGz.text(head, 124, 12).trim() || "0", 8);
+      const type = _TarGz.text(head, 156, 1);
+      const body = tar.subarray(offset + BLOCK, offset + BLOCK + size);
+      offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
+      if (type === "x") {
+        const path = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString("utf8"));
+        if (path) longName = path[1];
+        continue;
+      }
+      if (type === "L") {
+        longName = body.toString("utf8").replace(/\0+$/, "");
+        continue;
+      }
+      if (type === "g") continue;
+      const prefix = _TarGz.text(head, 345, 155);
+      const short = _TarGz.text(head, 0, 100);
+      const name = longName || (prefix ? `${prefix}/${short}` : short);
+      longName = "";
+      yield { name, type, mode: parseInt(_TarGz.text(head, 100, 8).trim() || "644", 8), body };
+    }
+  }
+  static text(head, at, length) {
+    const raw = head.subarray(at, at + length);
+    const end = raw.indexOf(0);
+    return raw.subarray(0, end === -1 ? raw.length : end).toString("utf8");
+  }
+};
+
+// ../../vscode/claude-russia/src/kit.ts
+var HOOKS_SOURCE = "hooks.source.json";
+var Kit = class _Kit {
+  /** personal — личная папка Claude человека; её узнаёт запись о прежнем, пока она жива (до config.restore). */
+  constructor(places, hooks, files, personal = () => ClaudeCodeConfig.personal(places.before)) {
+    this.places = places;
+    this.hooks = hooks;
+    this.files = files;
+    this.personal = personal;
+  }
+  places;
+  hooks;
+  files;
+  personal;
+  /** Сверяет набор с сервером и раскладывает изменившееся; возвращает ответ сервера. */
+  async sync(server) {
+    const answer = await server.kit();
+    const p = this.places;
+    await mkdir5(p.config, { recursive: true });
+    await writeFile4(p.claudeMd, answer.claude_md);
+    const state = await this.state();
+    const wanted = new Set(answer.bundles.map((bundle) => bundle.name));
+    for (const name of Object.keys(state)) {
+      if (!wanted.has(name)) {
+        await this.remove(name, state[name]);
+        delete state[name];
+      }
+    }
+    for (const bundle of answer.bundles) {
+      if (state[bundle.name]?.sha256 === bundle.sha256 && await this.present(bundle.name, state[bundle.name])) continue;
+      const gz = await server.bundle(bundle.name);
+      if (state[bundle.name]) await this.remove(bundle.name, state[bundle.name]);
+      state[bundle.name] = await this.lay(bundle, gz);
+      await writeFile4(p.kitState, JSON.stringify(state, null, 2));
+    }
+    await writeFile4(p.kitState, JSON.stringify(state, null, 2));
+    const plugins = answer.bundles.filter((bundle) => bundle.kind === "plugin").map((bundle) => p.plugin(bundle.name));
+    for (const dir of plugins) await this.rewriteHooks(dir);
+    await this.files.write(answer.settings, answer.cheap_model, plugins);
+    return answer;
+  }
+  /** Стирает всё, что разложило расширение; projects/ и прочие файлы Claude Code остаются. Сначала все чаты, и
+      свежие тоже, получают имя в личной папке: после отключения их показывает обычный Claude Code. */
+  async erase() {
+    const p = this.places;
+    await new ChatLinks(join4(await this.personal(), "projects"), p.projects).sync({ skipFresh: false });
+    for (const [name, laid] of Object.entries(await this.state())) await this.remove(name, laid);
+    for (const path of [p.plugins, p.usageSkill, p.claudeMd, p.settings, p.mcp, p.args, p.kitState, p.oldWrapperSh, p.terminal]) {
+      await rm3(path, { recursive: true, force: true });
+    }
+  }
+  /** Распаковывает во временную папку и переносит на место одним переименованием. */
+  async lay(bundle, gz) {
+    const temp = join4(this.places.root, `.raspakovka-${bundle.name}`);
+    await rm3(temp, { recursive: true, force: true });
+    await mkdir5(temp, { recursive: true });
+    const top = await new TarGz(gz).extract(temp);
+    if (await _Kit.digest(temp) !== bundle.sha256.toLowerCase()) {
+      await rm3(temp, { recursive: true, force: true });
+      throw new Said(`\u043D\u0430\u0431\u043E\u0440 ${bundle.name}: \u043E\u0442\u043F\u0435\u0447\u0430\u0442\u043E\u043A \u043D\u0435 \u0441\u043E\u0448\u0451\u043B\u0441\u044F`);
+    }
+    if (bundle.kind === "plugin") {
+      await mkdir5(this.places.plugins, { recursive: true });
+      await rm3(this.places.plugin(bundle.name), { recursive: true, force: true });
+      await rename(temp, this.places.plugin(bundle.name));
+      const hooks = join4(this.places.plugin(bundle.name), "hooks");
+      if (await _Kit.exists(join4(hooks, "hooks.json"))) await rename(join4(hooks, "hooks.json"), join4(hooks, HOOKS_SOURCE));
+      return { sha256: bundle.sha256, kind: bundle.kind, dirs: [] };
+    }
+    await mkdir5(this.places.skills, { recursive: true });
+    for (const name of top) {
+      await rm3(join4(this.places.skills, name), { recursive: true, force: true });
+      await rename(join4(temp, name), join4(this.places.skills, name));
+    }
+    await rm3(temp, { recursive: true, force: true });
+    return { sha256: bundle.sha256, kind: bundle.kind, dirs: top };
+  }
+  /** hooks.json набора собирается из исходного заново: путь к бинарю VS Code мог смениться. */
+  async rewriteHooks(dir) {
+    const source = join4(dir, "hooks", HOOKS_SOURCE);
+    if (!await _Kit.exists(source)) return;
+    const rewritten = this.hooks.rewrite(JSON.parse(await readFile3(source, "utf8")));
+    await writeFile4(join4(dir, "hooks", "hooks.json"), JSON.stringify(rewritten, null, 2));
+  }
+  /** Папки, которые разложил набор: папка плагина или папки навыков. */
+  paths(name, laid) {
+    return laid.kind === "plugin" ? [this.places.plugin(name)] : laid.dirs.map((dir) => join4(this.places.skills, dir));
+  }
+  async remove(name, laid) {
+    for (const path of this.paths(name, laid)) await rm3(path, { recursive: true, force: true });
+  }
+  async present(name, laid) {
+    for (const path of this.paths(name, laid)) if (!await _Kit.exists(path)) return false;
+    return true;
+  }
+  async state() {
+    try {
+      return JSON.parse(await readFile3(this.places.kitState, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  /** Отпечаток папки, как у сервера (cc_launch/nabor.py, Bundle.digest): sha256 по файлам в порядке
+      пути (по частям пути, как sorted() у Path), для каждого — путь, нулевой байт, содержимое. */
+  static async digest(dir) {
+    const files = [];
+    const walk = async (parts) => {
+      for (const entry of await readdir2(join4(dir, ...parts), { withFileTypes: true })) {
+        if (entry.isDirectory()) await walk([...parts, entry.name]);
+        else if (entry.isFile()) files.push([...parts, entry.name]);
+      }
+    };
+    await walk([]);
+    files.sort((a, b) => {
+      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+      return a.length - b.length;
+    });
+    const hash2 = createHash("sha256");
+    for (const parts of files) {
+      hash2.update(Buffer.concat([Buffer.from(parts.join("/")), Buffer.from([0])]));
+      hash2.update(await readFile3(join4(dir, ...parts)));
+    }
+    return hash2.digest("hex");
+  }
+  static async exists(path) {
+    return access(path).then(() => true, () => false);
+  }
+};
+
 // src/bbFiles.ts
-import { chmod as chmod2, mkdir as mkdir4, readdir as readdir2, rm as rm3, rmdir, writeFile as writeFile4 } from "node:fs/promises";
-import { dirname as dirname3, join as join3 } from "node:path";
+import { chmod as chmod2, mkdir as mkdir6, readdir as readdir3, rm as rm4, rmdir, writeFile as writeFile5 } from "node:fs/promises";
+import { dirname as dirname6, join as join5 } from "node:path";
 var CLOSED = [
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -2465,21 +2804,21 @@ var BbFiles = class _BbFiles {
   /** Пишет ccr-env.json с правами 0600 и стирает склейки прошлого пропуска (s-*.json обёртки). */
   async link(device) {
     await this.dropMerged();
-    await mkdir4(this.home.root, { recursive: true });
-    await rm3(this.home.env, { force: true });
-    await writeFile4(this.home.env, JSON.stringify(_BbFiles.env(device)), { mode: 384, flag: "wx" });
+    await mkdir6(this.home.root, { recursive: true });
+    await rm4(this.home.env, { force: true });
+    await writeFile5(this.home.env, JSON.stringify(_BbFiles.env(device)), { mode: 384, flag: "wx" });
     await chmod2(this.home.env, 384);
   }
   /** Настройки набора слоем пользователя: Node хуков — программа bb, как у VS Code. Флаги наборов — в ccr-args. */
   async write(fromServer, cheapModel, pluginDirs) {
     const { availableModels: _menu, ...settings } = fromServer;
     const env = { ...settings.env, ELECTRON_RUN_AS_NODE: "1" };
-    await mkdir4(dirname3(this.home.userSettings), { recursive: true });
-    await writeFile4(this.home.userSettings, JSON.stringify({ ...settings, env }, null, 2));
-    await writeFile4(this.home.args, pluginDirs.flatMap((dir) => ["--plugin-dir", dir]).map((word) => `${word}
+    await mkdir6(dirname6(this.home.userSettings), { recursive: true });
+    await writeFile5(this.home.userSettings, JSON.stringify({ ...settings, env }, null, 2));
+    await writeFile5(this.home.args, pluginDirs.flatMap((dir) => ["--plugin-dir", dir]).map((word) => `${word}
 `).join(""));
-    await mkdir4(this.home.places.usageSkill, { recursive: true });
-    await writeFile4(join3(this.home.places.usageSkill, "SKILL.md"), _BbFiles.usageSkill(cheapModel));
+    await mkdir6(this.home.places.usageSkill, { recursive: true });
+    await writeFile5(join5(this.home.places.usageSkill, "SKILL.md"), _BbFiles.usageSkill(cheapModel));
   }
   /** Навык usage заменяет встроенную /usage, которая за нашим адресом показывает доллары: модель зовёт инструмент
       плагина limity и повторяет его строки. У VS Code строки приносит хук, у bb хука нет — есть свой инструмент. */
@@ -2500,29 +2839,29 @@ var BbFiles = class _BbFiles {
   /** Выход: без ccr-env.json обёртка Claude не запускает, а bb без нашей переменной идёт к своему claude. */
   async erase() {
     await this.dropMerged();
-    for (const path of [this.home.env, this.home.args, this.home.userSettings]) await rm3(path, { force: true });
-    await rm3(this.home.places.usageSkill, { recursive: true, force: true });
-    await rmdir(dirname3(this.home.places.usageSkill)).catch(() => {
+    for (const path of [this.home.env, this.home.args, this.home.userSettings]) await rm4(path, { force: true });
+    await rm4(this.home.places.usageSkill, { recursive: true, force: true });
+    await rmdir(dirname6(this.home.places.usageSkill)).catch(() => {
     });
   }
   async dropMerged() {
-    const names = await readdir2(this.home.root).catch(() => []);
+    const names = await readdir3(this.home.root).catch(() => []);
     for (const name of names) {
-      if (/^s-\d+\.json(\.\d+)?$/.test(name)) await rm3(join3(this.home.root, name), { force: true });
+      if (/^s-\d+\.json(\.\d+)?$/.test(name)) await rm4(join5(this.home.root, name), { force: true });
     }
   }
 };
 
 // src/embedded.ts
 var PY_HOOK = '"use strict";\nvar __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __getOwnPropNames = Object.getOwnPropertyNames;\nvar __hasOwnProp = Object.prototype.hasOwnProperty;\nvar __export = (target, all) => {\n  for (var name in all)\n    __defProp(target, name, { get: all[name], enumerable: true });\n};\nvar __copyProps = (to, from, except, desc) => {\n  if (from && typeof from === "object" || typeof from === "function") {\n    for (let key of __getOwnPropNames(from))\n      if (!__hasOwnProp.call(to, key) && key !== except)\n        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });\n  }\n  return to;\n};\nvar __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);\n\n// ../../vscode/claude-russia/src/pyHook.ts\nvar pyHook_exports = {};\n__export(pyHook_exports, {\n  PythonHook: () => PythonHook\n});\nmodule.exports = __toCommonJS(pyHook_exports);\nvar import_node_child_process = require("node:child_process");\nvar PythonHook = class _PythonHook {\n  constructor(platform = process.platform) {\n    this.platform = platform;\n  }\n  platform;\n  /** \u0427\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C Python \u0437\u0434\u0435\u0441\u044C, \u0438\u043B\u0438 null, \u0435\u0441\u043B\u0438 Python \u043D\u0435\u0442. */\n  python() {\n    if (this.platform === "win32") return _PythonHook.works(["py", "-3"]) ? ["py", "-3"] : null;\n    const which = (0, import_node_child_process.spawnSync)("/bin/sh", ["-c", "command -v python3"], { encoding: "utf8" });\n    const path = which.status === 0 ? which.stdout.trim() : "";\n    if (!path) return null;\n    if (this.platform === "darwin" && path === "/usr/bin/python3") {\n      if ((0, import_node_child_process.spawnSync)("/usr/bin/xcode-select", ["-p"], { stdio: "ignore" }).status !== 0) return null;\n    }\n    return [path];\n  }\n  /** \u0417\u0430\u043F\u0443\u0441\u043A\u0430\u0435\u0442 \u0445\u0443\u043A \u0438 \u043E\u0442\u0434\u0430\u0451\u0442 \u0435\u0433\u043E \u043A\u043E\u0434 \u0432\u044B\u0445\u043E\u0434\u0430; \u043D\u0435\u0442 Python \u2014 0. */\n  run(args) {\n    const python = this.python();\n    if (!python) return 0;\n    const done = (0, import_node_child_process.spawnSync)(python[0], [...python.slice(1), ...args], { stdio: "inherit" });\n    return done.status ?? 0;\n  }\n  static works(command) {\n    return (0, import_node_child_process.spawnSync)(command[0], [...command.slice(1), "--version"], { stdio: "ignore" }).status === 0;\n  }\n};\nif (require.main === module) process.exit(new PythonHook().run(process.argv.slice(2)));\n// Annotate the CommonJS export names for ESM import in node:\n0 && (module.exports = {\n  PythonHook\n});\n';
-var WRAPPER_EXE = "TVp4AAEAAAAEAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuJAAAUEUAAGSGBwATRwOwAAAAAAAAAADwACIACwIOAACoAAAATgAAAAAAAKohAAAAEAAAAAAAQAEAAAAAEAAAAAIAAAYAAAAAAAAABgAAAAAAAAAAYAcAAAQAAAAAAAADAGCBAAAAAQAAAAAAEAAAAAAAAAAAEAAAAAAAABAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAePUAANwAAAAAAAAAAAAAAAAwBwD4AQAAAAAAAAAAAAAAUAcAWAAAAAAQAQAcAAAAAAAAAAAAAAAAAAAAAAAAAMjDAAAoAAAAAAAAAAAAAAAAAAAAAAAAAPD4AACYAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALnRleHQAAACmpwAAABAAAACoAAAABAAAAAAAAAAAAAAAAAAAIAAAYC5yZGF0YQAA2EMAAADAAAAARAAAAKwAAAAAAAAAAAAAAAAAAEAAAEAuYnVpbGRpZBwAAAAAEAEAAAIAAADwAAAAAAAAAAAAAAAAAABAAABALmRhdGEAAADgAAYAACABAAACAAAA8gAAAAAAAAAAAAAAAAAAQAAAwC5wZGF0YQAA+AEAAAAwBwAAAgAAAPQAAAAAAAAAAAAAAAAAAEAAAEAudGxzAAAAABAAAAAAQAcAAAIAAAD2AAAAAAAAAAAAAAAAAABAAADALnJlbG9jAABYAAAAAFAHAAACAAAA+AAAAAAAAAAAAAAAAAAAQAAAQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFVBV0FWQVVBVFZXU0iB7LgBAABIjawkgAAAAA8ptSABAADoVhMAAEiNFQIQAQAxyUG4AIAAAP8VlOoAALkAgP//Acg5yA+G/gYAAEiNNd4PAQBIifFmulwA6EKlAABIhcAPhNQGAABIicFIKfFI0flIgcEVgP//SIH5/3///w+GtwYAAEiDwAJIjRU1sAAASInB6PmlAAD/FfvpAABIicdIjZUIAQAAxwIAAAAASInB/xU66AAASIXAD4R8BgAASYnED1fASI2d8AAAAA8pA0jHQxAAAAAATI01qK8AAEG4AQAAAEiJ2UyJ8ugtBwAATI09Og8BAEyJ+eiipQAASInZTIn6SYnA6BAHAABBuAEAAABIidlMifLo/wYAAIO9CAEAAAJ8FUmLRCQID7cAg/gtdAiFwA+FkQMAAEiNDUivAABIjRXnDgIAQbjgfwAA/xVb6QAABSCA//+zAT0hgP//D4JnAwAARIutCAEAAEiNDbsOAgBIjRV8rwAA6JgIAADoUQcAAEiFwA+EzgUAAEiJx0iJwegGpQAASIXAdCAPt0xH/o1R94P6BXMOZsdER/4AAEj/yHXn6wWD+SB07UGD/QIPjF4CAAC7AQAAALABiYUMAQAATI01s68AAA9X9kyJpRABAABEia0cAQAASGPDTYs8xEyJ+UyJ8uiApAAAhcB1HI1zAUQ57n0USGPGTYs8xE2F/w+EEwEAAInz6yRBuAsAAABMiflIjRV2rwAA6HukAACFwHQHid7pzgAAAEmDxxZIjY3wAAAATYn1TIny6CUIAABNjXcCTYn8QQ+3NCQPt8aNSPeD+QVzCkmDxAJJg8YC6+aD+CB08UyJ4egcpAAASIXAdHJMjUD/SIPA/kMPtwxED7fRRI1K90GD+QVzC0j/yEmDwP9y5etNg/ogdPBNhcAPlMJmg/57QQ+VwUEI0XU1ZoP5fXUvSY1IAUiD+QNyXr4BAAAAQQ+3Do1R94P6BXMLSYPGAkj/yHXr62yD+SB08DH26+yJ3kyLpRABAABNie5Ei60cAQAASI2N8AAAAEyJ+uheBwAA/8aJ80Q57g+MxP7//+nvAAAARTH/69oPKXVASMdFUAAAAABMjXVATInxTIni6M0EAABBuAYAAABIjRVkrwAA6zoPKXVASMdFUAAAAABMjXVATInxTIni6KMEAABFMcCF9kEPlMBIjRU3rwAASI0FPq8AAEgPRNBJg8gGTInx6HwEAABIifno+KIAAEyJ8UiJ+kmJwOhmBAAAQbgBAAAATInxSI0VCK4AAOhRBAAASItNQEiFyUyLpRABAABNie51B4ne6SL////oqQcAAEiNjfAAAABIjRU4DAUA6H4GAAD/w8eFDAEAAAAAAABEi60cAQAARDnrD4zV/f//6YgAAAD2hQwBAAABdH8PV8BIjXVADykGSMdGEAAAAABIjRV+rQAAQbgHAAAASInx6M4DAABIifnoSqIAAEiJ8UiJ+kmJwOi4AwAASI0VY60AAEG4AQAAAEiJ8eijAwAASI0VEK0AAEiNvfAAAABIifno7AUAAEiLDuj8BgAASI0VkgsFAEiJ+ejVBQAASI0NgwsCAEiNFR6tAADoYAUAAOgZBAAASIXAD4XTAAAA6d0AAAAx2w+3BzHJZoXAdCeFyXUOZoP4CXQpD7fQg/ogdCEx0maD+CIPlMIx0Q+3RwJIg8cC69QxwOsID7dHAkiDxwJmg/gJdPIPt8CD+CB06oXAdDJIjRV4qwAASI218AAAAEG4AQAAAEiJ8ejjAgAASIn56F+hAABIifFIifpJicDozQIAAITbdFZIjQ1GqwAASI0VzwoDAEG44H8AAP8VQ+UAAAUggP//PSGA//9yMEiNDbAKAwBIjRVLrAAA6I0EAADoRgMAAEiFwA+EbwEAAEiNjfAAAABIicLo4gcAAA9X9kiNddAPKTYPKXYwDyl2QA8pdiAPKXYQxwZoAAAAx0Y8AAEAALn2////6MICAABIiUZQufX////otAIAAEiJRli59P///+imAgAASIlGYP8VoOQAADHJSIXAD5TBweEbg8kESIuV8AAAAEiNhdgAAABIiUQkSEiJdCRADxF0JDCJTCQox0QkIAEAAABIjQ3yCQEARTHARTHJ/xUu5AAAhcAPhPcAAAAxyTHS/xUU5AAASIXAdEVIicZIjX1AQbiQAAAASIn5MdLo3BMAAMdHEAAwAABIifG6CQAAAEmJ+EG5kAAAAP8VguQAAEiLldgAAABIifH/FbLjAABIi43gAAAA/xVV5AAASIuN4AAAAP8VoOMAAEiLjdgAAAC6//////8VduQAAEiNdUDHBgEAAABIi43YAAAASIny/xXM4wAAiwYPKLUgAQAASIHEuAEAAFtfXkFcQV1BXkFfXcNIjQ0gCQMASI0V9asAAOj9AgAASI0NDQkEAP8Vl+MAAIP4/w+Ed/7//0iNDa2qAADrB0iNDb6oAAAx0ugdAAAA/xV54wAASI0NqqgAAInC6AkAAABIjQ2wqQAA69xVVldTSIPsWEiNbCRQiddIicu59P////8VVeMAAEiJxkiJ2eiyEgAASMdEJCAAAAAATI1NBEiJ8UiJ2kGJwP8VruMAAIX/dD9MjQU5qQAASI1d4LogAAAASInZQYn56LMRAABIidnobxIAAEjHRCQgAAAAAEyNTQRIifFIidpBicD/FWvjAABIx0QkIAAAAABIjRX4qAAATI1NBEiJ8UG4AQAAAP8VSOMAALkBAAAA/xV14gAAzFVWV1NIg+woSI1sJCBMicZIidNIic9IiwFIi0kISY0UCEj/wkg7VxB2IEiNDBJIiU8QSMHiAkiJwegWnQAASIkHSIXAdC5Ii08ISI0MSEyNBDZIidro+REAAEgDdwhIiXcISIsHZscEcAAASIPEKFtfXl3DuQEAAAD/FfXhAADMVVZIg+woSI1sJCD/FSviAABIicZI/8hIg/j9dxRIifG6AQAAAEG4AQAAAP8VQ+IAAEiJ8EiDxCheXcNVVldTSIPsSEiNbCRASMdEJDAAAAAAx0QkKIAAAADHRCQgAwAAAEiNDSwHBAAx9roAAACAQbgHAAAARTHJ/xVO4QAASIP4/w+EzwAAAEiJx7kAABAA6C+cAADHRQQAAAAASIXAD4S+AAAASInGSMdEJCAAAAAATI1NBEiJ+UiJwkG4AAAQAP8VneEAAIXAD4SUAAAAgX0EAAAQAA+EhwAAAEiJ+f8V3+AAAESLTQTHRCQoAAAAAEjHRCQgAAAAALnp/QAAMdJJifD/FVLhAACJw0hjyEj/wboCAAAA6IibAABIhcB0UEiJx0SLTQSJXCQoSIlEJCC56f0AADHSSYnw/xUb4QAASInx6GubAAAxwGaBP//+D5TASI00R0iJ8EiDxEhbX15dw0iNDeCnAAAx0uhZ/f//uQEAAAD/FXjgAADMVVZXU0iD7ChIjWwkIEiJ1kiJz+hvnAAASInDSInx6GScAABIAdhIPQCAAABzJUiNHeIFBABIidlIifroN5wAAEiJ2UiJ8kiDxChbX15d6QScAABIjQ1zpwAAMdLo7Pz//8xVQVdBVlZXU0iD7ChIjWwkIEiJ10iJzkiNFQOmAABBuAEAAADoeP3//2aDPwB0GEiNFQOoAABIifnoB5wAAEiFwA+ErwAAAEiNFb2lAABBuAEAAABIifHoRf3//0Ux9kiNXQQPtweD+Fx0SIXAdE1mg/giT418NgFND0X+ZsdFBFwATYX/dBZBuAEAAABIifFIidroCf3//0n/z3XqQbgBAAAASInxSIn66PP8//9FMfbrA0n/xkiDxwLrp2bHRQZcAE0B9nQdSffeSI19BkG4AQAAAEiJ8UiJ+ujC/P//Sf/GdepIjRUgpQAAQbgBAAAASInx6xFIifnoJ5sAAEiJ8UiJ+kmJwEiDxChbX15BXkFfXemJ/P//VVZXU0iD7GhIjWwkYA8pdfBIic4Ptwlmhcl0IkiNRgK/xZ0cgQ+3yTH5afmTAQABD7cISIPAAmaFyXXp6wW/xZ0cgUiNDVMEAgDovpoAAEgFQID//0g9AID//w+CfQEAAIl8JCBIjT0xBAUATI0F2KYAAEyNDSMEAgC6AIAAAEiJ+ei6DQAASIn5/xWd3gAAg/j/D4UkAQAA/xV23gAAiUQkIEiNDfMDBgBMjQW4pgAATI0N5QMFALoAgAAA6H8NAAAPV/YPEXQkMMdEJCgAAAAASMdEJCAAAAAAuen9AAAx0kmJ8EG5//////8VzN4AAInDSGPI6NKYAABIhcAPhOgAAABIiccPEXQkMIlcJChIiUQkILnp/QAAMdJJifBBuf//////FZLeAABIx0QkMAAAAADHRCQogAAAAMdEJCACAAAASI0NUgMGALoAAABARTHARTHJ/xV53QAAx0XsAAAAAEiD+P90YUiJxv/LSMdEJCAAAAAATI1N7EiJwUiJ+kGJ2P8VO94AAIXAdDxIifH/FTbdAABIifnoHpgAAEiNDfcCBgBIjRXwAgUAQbgBAAAA/xWk3QAAhcB0DQ8odfBIg8RoW19eXcP/FWXdAABIjQ2WogAAicLo9fn//0iNDW6kAAAx0ujn+f//uQEAAAD/FQbdAADMVVZXU0iD7ChIjWwkIGaDOgB0aUiJ10iJzkiJ+0iJ+Wa6CgDo3ZcAAEiFwHQOSInHSIPHAmbHAAAA6wxIidno0pgAAEiNPENIidnoxpgAAEiFwHQiZoN8Q/4NdQ9IicFmx0RD/gAASP/JdAtIifFIidroevz//2aDPwB1nUiDxChbX15dw1VIieVIiwU9pQAAxwABAAAAXekAAAAAVUFXQVZBVUFUVldTSIPsOEiNbCQwZUiLBCUwAAAASItwCEiLHSilAAAxwPBID7EzQQ+Ux0g5xg+UwEQI+HUgSIs9u9wAALnoAwAA/9cxwPBID7EzQQ+Ux3QFSDnGdedIiw3zpAAAiwGD+AEPhPECAACDOQB0DMYFDAIHAAHpRgIAAMcBAQAAALkCAAAA6GeXAAAx9kiJwTHSQbgEAAAARTHJ6JKXAABIjQ32AgAA6OaWAACFwA+FuAIAAOjRBQAASI0N6QIAAOj9lgAA6EgFAABIiwVhpAAAuQEAAACJCEiLBVukAACJCEiLBVqkAACJCEiLBSGkAABmgThNWnU9SGNIPIE8CFBFAAB1MEgByA+3SBiB+QsCAAAPhCICAACB+QsBAAB1FbnoAAAAg3h0D3IKMfaDPAgAQA+VxkiLBe6jAACDOAGJNVUBBwC5AgAAAIPZAOgAmAAASIsFMaQAAIsw6LKWAACJMEiLBRGkAACLMOiSlgAAiTDozwkAAIXAD4jSAQAASIsFhKMAAIM4AXUMSI0NiAQAAOgjBAAASIsFhKMAAIM4/3UKuf/////opZUAAEiLDbajAABIixW3owAA6PKVAACFwA+FqQEAAEiLBcOjAACLAEiNTQSJAUiLBaSjAABEiwhIiUwkIEiNDYEABwBIjRV+AAcATI0FfwAHAOhSAgAAhcAPiEkBAABMYy1fAAcASo0M7QgAAADoFpUAAEiFwA+ELAEAAEiJxkWF7X5JTIslPgAHAEUx9kuLPPRIifnozwkAAEiJw0j/w0iJ2ejhlAAASokE9kiFwA+E8wAAAEiJwUiJ+kmJ2OjVCQAASf/GTTn1dcPrA0Ux7UrHBO4AAAAASIk16v8GAEiNDSABAAD/FV3aAABIiw2+ogAASIsVv6IAAOj6lAAA6KICAABIiwWeogAAxwACAAAASIsdiaIAAEWE/3QFMcBIhwNIiwVIogAASIsASIXAdAwxyboCAAAARTHA/9BIizWN/wYA6NwCAABIiTCLDXP/BgBIixVw/wYATIsFcf8GAOjE7v//icaDPYP/BgAAdEyAPWL/BgAAdQXoW5QAAInwSIPEOFtfXkFcQV1BXkFfXcO5+AAAAIO4hAAAAA8Pg9/9///p5P3//7kIAAAA6IMCAAC5HwAAAOh5AgAAifHodpQAAOhhlAAAuQoAAADoYwIAAMxVSInlSIsFo6EAAMcAAAAAAF3pZvz//1VIieVd6fWTAABVSInlMcld6XmUAABVSInlXcNVSInlSIsJuP///yAjAT1DQ0cgdQu4//////ZBBAF0AjHAXcPMzMxVVldIg+wgSI1sJCBIiwXhoQAAgzgCdAbHAAIAAACD+gF0M4P6AnUmSI017dIAAEiNPebSAABIOfd0E0iLB0iFwHQC/9BIg8cISDn+de1Ig8QgX15dw7oBAAAASIPEIF9eXek9kAAAVUiJ5YP6A3QEhdJ1Bl3pKpAAAF3DVUFXQVZWV1NIg+woSI1sJCBEic9MicZIidNJic5Mi31g6CqUAACD/wG5AgAAAIPZAOgqlAAA6DWUAACLAEGJBug7lAAASIsASIkD6ECUAABIiwBIiQZBiw/oQpQAADHASIPEKFtfXkFeQV9dw8zMzFVIg+wgSI1sJCBIiwUH/QAASIsASIXAdBr/0EiLBfb8AABIjUgISIkN6/wAAEiLQAjr4UiDxCBdw1VWV0iD7CBIjWwkIEiLNcSgAACLBoP4/3URuP////+NSAL/wEiDPM4AdfSFwHQSicdI/8//VP4IifhI/8+FwHXzSI0Nf////0iDxCBfXl3pRP7//1VIieWAPSz9BgAAdAJdw8YFIf0GAAFd6ZD////MzMxVVldIg+wwSI1sJDC+AQAAAPZBBAJ1IEiJz4sJSI1V8EiJOkyJQgjoyJMAAIXAdAeD+P91DDH2ifBIg8QwX15dw4sP6EyTAADMzMzMVUiJ5UiJDd38BgBd6UeTAADMzMxVSInlSIsFAaAAAEiLAF3DVVZIg+woSI1sJCCJzrkCAAAA6P2RAABIjRXmnwAASInBQYnw6KuPAAC5/wAAAOjxkgAAzFVIieXb413DVVZXSIPsQEiNbCRASInOiwH/yIP4BXcSicBIjQ3LoAAASGM8gUgBz+sHSI09gqAAALkCAAAA6J2RAABMi04IDxBGEPIPEE4g8g8RTCQwDxFEJCBIjRVnoAAASInBSYn46DOPAAAxwEiDxEBfXl3DzFVBV0FWQVVBVFZXU0iD7BhIjWwkEIA9wPsGAAAPhU0BAADGBbP7BgABSIPsIOiljwAASIPEIEiYSI0EgEiNBMUPAAAASIPg8OiHBQAASCnESIngSIkFxvsGAMcFsPsGAAAAAABIiz2NoQAASIn4SCsFi6EAAEiD+AcPjvAAAABIix16oQAASIn4SCnYSIP4DHwsSIsdZ6EAAIM7AHUvSIsdW6EAAIN7BAB1IkiLBU6hAABIjVgMg3gIAEgPRdiDOwB1CoN7BAAPhLMAAABIOx0koQAAczlMizWrnQAASI11BIsDi0sEQgMEMUwB8YlFBEiD7CBBuAQAAABIifLoxAEAAEiDxCBIg8MISDn7ctKLBf/6BgCFwH5WvxAAAABIixX7+gYAMdtIjXX4TIs1TtUAAESLRDrwRYXAdCRIi0w6+EiLFDpIg+wgSYnxQf/WSIPEIEiLFcb6BgCLBbT6BgBI/8NIY8hIg8coSDnLfMNIjWUIW19eQVxBXUFeQV9dw4tTCIP6AQ+FKQEAAEiDwwxIOx1hoAAAD4Ny////TIs15JwAAEyNPV2gAABMjSUmoAAASI11+Em9AAAAAP////8PtlMIjUL/idExwTnBD4a6AAAARA+8wkGNSP2D+QMPh6kAAACLQwRMAfBJYwyPTAH5/+EPtghMjZEA////hMnrHIsITo0UKYXJ6xJMixDrEQ+3CEyNkQAA//9mhclMD0nRiwtJKcpNKfJOiwwxTQHKTIlV+IP6P3cnScfD/////4nRSdPjSffTTTnaf1CJ0f7JScfD/////0nT40052nw9RInBTYtEzOhIg+wgSInBSIny6E8AAABIg8QgSIPDDEg5+w+COP///+mC/v//SIPsIEiNDS6eAADougEAAEiD7DBMiVQkIEiNDUOeAABJicDoogEAAEiD7CBIjQ3UnQAA6JIBAADMVUFXQVZBVFZXU0iD7FBIjWwkUEyJx0iJ00iJzkxjPSv5BgBNhf9+P0iLBSv5BgBKjQz9AAAAAEiNDIkx0kyLRBAYSTnwdxVMi0wQIEWLSQhNAchMOcYPgtMAAABIg8IoSDnRddjrA0Ux/0iJ8eg8jAAASIXAD4TSAAAASYnGSIsF1fgGAEqNDP0AAAAATI0kiU6JdCAgQscEIAAAAADon4wAAEGLTgxIAcFIiwWp+AYASolMIBhIjVXQQbgwAAAA/xX80gAASIXAD4SNAAAAi0X0jUj/icIxyjnKdh0PvMCD+Ad3FbnMAAAAD6PBcjpBuAQAAACD+AF0BkG4QAAAAEiLTdBIiwVP+AYAS40Uv0yNDNBJiUkISItV6EmJURD/FZXSAACFwHRT/wUf+AYASInxSInaSYn46LQBAACQSIPEUFtfXkFcQV5BX13DSI0NKZ0AAEiJ8ug1AAAAQYtWCEiLBfP3BgBLjQy/TItEyBhIjQ0mnQAA6BUAAAD/FcjRAABIjQ1FnQAAicLoAQAAAMxVVkiD7ChIjWwkIEiJzkiNRShIiRBMiUAITIlIEEiJRQC5AgAAAOjmjAAASI0NMp0AALobAAAAQbgBAAAASYnB6PyNAAC5AgAAAOjCjAAATItFAEiJwUiJ8uh/iwAA6I6MAADMzFVIieUxwF3DVVZXU0iD7DhIjWwkMEyJxkiJ10iJy0iNRUhMiQhIiUUA6IaLAABIiwhIg8kCSItFAEiJRCQoSMdEJCAAAAAASInaSYn4SYnx6JeNAACQSIPEOFtfXl3DzFVWV1NIg+w4SI1sJDBIictMiU1IuP////9ICdF0QkyJxkiJ10iNRUhIiUUA6COLAABIiwhIi0UASIlEJChIx0QkIAAAAABIidpJifhJifHoSI0AAInBhcC4/////w9JwUiDxDhbX15dw8zMzFVIieVq/1iAfAEBAEiNQAF19V3DVUiJ5UiJyE2FwHQNMcmIFAhI/8FJOch19V3DVUiJ5UiJyDHJSTnIdA1EigwKRIgMCEj/wevuXcNRUEg9ABAAAEiNTCQYchhIgekAEAAASIUJSC0AEAAASD0AEAAAd+hIKcFIhQlYWcNVSInlD7fRZoXJdDaNQgfB6AP/yGZBuB8AZkQPvcBBg/APsRBEKMFqAUFYQdPgQYHg//8BAEGD+BBqEFhBD0LA6wRmuAEAidHB6QOD4gdmg/oBZoPZ/wHB/8n32CHIXcNVQVZWV1NIgewAAQAASI2sJIAAAABIidbbKdnA231gD7dFaInHgef/fwAASLkAAAAAAAD//0gjTWBIuv///////w7JSDnKuRhAAABIGfkPgv0AAADbLTqcAADYydgFQpwAANgFQJwAANl9fA+3RXwNAAwAAGaJRXjZbXjbVXTZbXy4////fyNFdNnA3A0bnAAA2MLbLRucAADYytnB2OHbLR+cAADf6Q+H1QEAANstIZwAANnJ3+nd2A+H2wEAAN3b2crZwtjh2cDbfSDZwNs+D7dNKIHh/38AAIn6KcqD+hYPjoIAAADd2d3Y2cDcDfGbAADZwtjh2y33mwAA2MvZzNjh3uLZy97h2cLY4dnA230w2cDbPg+3TTiB4f9/AAApz4P/PnxC3dnd2NnA3A3RmwAA2cLY4dst15sAAN7L3OvZy97h3unZwdjh2cDbPuscgf//fwAAdR3c4NnA2z7bfhAxwOn2AAAA3drZyd7q3unp5gAAAEwPv/DZwNnh2330230ASInp6DYNAABqF0FYQSnA2230230QSI1NwEiNVRDonQkAADHA223ASIP4AnQ42X1+D7dNfoHJAAwAAGaJTXrZbXrbVXDZbX6LTXDyDyrB8g8RRMXYiU1s2mVs2A2gmgAASP/A68LdXehqAkFZZg9XwPJCDxBMzdhJ/8lmDy7IdQJ77oHH6r///0GDwQJIx0QkIAIAAABIjU3YSI1dsEiJ2kGJ+Oi8AQAA8g8QC/IPEEMIZg8o0PIPWNHyDxFVSPIPXNHyD1zC3UVITYX2eBvbPvIPEUVY3UVY234QSIHEAAEAAFtfXkFeXcPZ4Ns+8g8RRVDdRVDZ4Nt+EPfY693d2t3Y3djZ6Nng3sHZwNwNFpoAAP/I6xLd2d3Y2ejewdnA3A0CmgAA/8DewtstAJoAANjJ6Qj+//9VVldTSIPsOEiNbCQwSInWZg9+w4nYJf///3892g/JTXdi8w9ayPIPEAVLmgAA8g9ZwfIPWAVHmgAA8g9YBUeaAADyDyzA8g8QHUOaAADyD1nY8g9Y2fIPEBU7mgAA8g9Z0PIPWNPyDxEW8g8QHS+aAABmDy7adiPyD1gFOZoAAP/I6ys9//9/f3ZC8w9cwPMPWsDyDxEGMcDreWYPLhUGmgAAdm/yD1gFBJoAAP/A8g8QFdqZAADyD1nQ8g9YyvIPWQXSmQAA8g9YwetDQYnAQcHoF0GBwGr///9EicHB4RcpyGYPbsDzD1rASInp8g8RAUiDZCQgAEiNffhqAUFZSIn66CUAAADyDxAHhdt4DfIPEQZIg8Q4W19eXcNmD1cFRJkAAGYPEwb32OvnVUFXQVZBVUFUVldTSIHsCAMAAEiNrCSAAAAARA8prXACAABEDymlYAIAAGZEDymdUAIAAEQPKZVAAgAARA8pjTACAABEDymFIAIAAGYPKb0QAgAADym1AAIAAEiJ10mJzkiLjfACAABIjQUtugAAiwSIiYX4AQAATGPgQY1Z/0GNQP1muRgAZplm9/kPv8rB+Q8BwTHSZoXJD07KD7fBQYnCQSnaTImN0AEAAEONDAz/yUxj2UiNDfC5AABMOdp/IEmNNBKF9ngJifbyDyoEsesEZg9XwPIPEUTVoEj/wuvbSIm96AEAAInai73QAQAARTHJTTnhfzdmD1fASYnSRTHbTDnfdBnyQw8QDN7yQg9ZTNWg8g9YwUn/w0n/yuvi8kIPEUTNQEn/wUj/wuvEa9DoRo0MAkaNHAJBg8PoajBaRCnKiZXcAQAAai9aRImN9AEAAEQpyomV4AEAADHSQYP7AQ+UwonASI0cgcHiFoHK//8/AImV5AEAAPJEDxANKJgAAPJEDxAVJ5gAAPIPEDUvmAAAZkUPV9vyRA8QJRmYAADyRA8QBfCXAADyRA8QLe+XAACLhfgBAABBicVEie7yDxBE9UBIjYWAAQAASInxSIPpAXI0Zg8oyPJBD1nIZg/myfMP5slmDyjR8kEPWdXyD1jQ8g8s0okQ8g9YTM1ASIPABGYPKMHrxkSJ2kWJ3+hWBwAAZg8o+PJBD1nB6D0xAADyQQ9ZwvIPWMfyRA8syGYP5sjzD+bJ8g9cwYO99AEAABh+MIuUtXwBAACJ0IuN3AEAANP4QQHB0+ApwkGJ0omUtXwBAACLjeABAABB0/pFifvrLEWF/0WJ+3QYRTHSZkEPLsRqAUFfD4KoAAAAagJBWusZRIuUtXwBAABBwfoXagFBX0WF0g+OiQAAADHAMclIOc50MouUjYABAABBuP///wCFwHUKQbgAAAABhdJ0E0Ep0ESJhI2AAQAARIn4SP/B680xwOv3g730AQAAGA+P6gAAAEH/wUGD+gJ1OGYPKP7yD1z4hcB0JGYPKMZEidpEiY38AQAARYnf6EkGAABFiftEi438AQAA8g9c+GoCQVpmDyjHRImV/AEAAGZBDy7DD4WpAAAAD4qjAAAAMclIifBMOeB+DAuMhXwBAABI/8jr70mNVCT/RInohckPhcUAAAD/wIO8lYABAAAASI1S/3TwSGPIRAOt0AEAAE1jxUiNVgFIOc4Pgxr+///yDyoEk0gB/vIPEUT1oGYPV8BFMclMOc90GfJDDxAMzvJCD1lMxaDyD1jBSf/BSf/I6+LyDxFE1UBB/8VIidbrr4uN5AEAACGMtXwBAADpBP///0WJ3EWJz2oYWou99AEAACn66GIFAABmDy4FupUAAHNb8g8swImEtYABAABIi73oAQAASIud8AIAAESLtfgBAABFiePphAAAAEWJz0j/zkiLvegBAABIi53wAgAARIu1+AEAAEGDw+iJ8Ej/zkH/zYO8hYABAAAAdOrrUfIPEA0llQAA8g9ZyPIPLMFmD+bJ8w/myfIPWQ0VlQAA8g9YyPIPLMmJjLWAAQAAQf/FiYS1hAEAAEGJ+0iLvegBAABIi53wAgAARIu1+AEAAPIPEAX8lAAARIna6JwEAABEieiFwHgeicHyDyqMjYABAADyD1nI8g8RTM1A8kEPWcD/yOveSI0FeMAAAESJ6YXJeFWJykyNBNVAAAAASQHoRInqKcpBOdZBidFFD0zOTWPJZg9XwEmJwkUx2005y38Y8kEPEAryQw9ZDNjyD1jBSf/DSYPCCOvjidLyDxGE1eAAAAD/yeunSI1D/0iD+AJzHWYPV8lEiepEifiF0nhjidHyD1iMzeAAAAD/yuvtSIP7A0SJ+A+FpwAAAESJ6kiJ0YXJD46zAAAA8g8QhM3YAAAA8g8QjM3gAAAAZg8o0PIPWNHyD1zC8g9YwfIPEYTN4AAAAPIPEZTN2AAAAEj/yeu/Zg8owYO9/AEAAAB0DGYPKAX0kwAAZg9XwfIPEQfyDxCF4AAAAPIPXMExyUWF7UQPTulJOc10DvIPWITN6AAAAEj/wevtg738AQAAAHQIZg9XBbOTAADyDxFHCOnTAAAAZg9XwEWF7XhSRInp8g9YhM3gAAAAQf/N6+pIidGD+QF+UPIPEITN2AAAAPIPEIzN4AAAAGYPKNDyD1jR8g9cwvIPWMHyDxGEzeAAAADyDxGUzdgAAABI/8nrwoO9/AEAAAB0CGYPVwU9kwAA8g8RB+thZg9XwIP6AnwO8g9YhNXgAAAASP/K6+3yDxCN4AAAAIO9/AEAAAB0I2YPFo3oAAAAZg8oFf+SAABmD1fKZg8RD2YPV8JmDxNHEOsW8g8RD/IPEI3oAAAA8g8RTwjyDxFHEIPgBw8otQACAAAPKL0QAgAARA8ohSACAABEDyiNMAIAAEQPKJVAAgAARA8onVACAABEDyilYAIAAEQPKK1wAgAASIHECAMAAFtfXkFcQV1BXkFfXcNVVkiB7KgAAABIjawkgAAAAEiJyNsq2cDbfaDb6A+KwAEAAESLTahIi1Wg2cDbfbAPt024geH/fwAASboAAAAAAAAAgEw5VbBIgdn/fwAAD4OOAQAARYnLQYHj/38AAHU1TInJSA+k0QFMjRQSan9BW00PvdpBg/M/QYPDQA+3yUwPvdFBg/I/SIXJRQ9E02pAQVtFKdNNicpJgeIAgP//RYXAeCW5/n8AAEQp2UE5yH49232Q9kWZgNkF0pEAANkF0JEAAOkVAQAARInG995Eidn32UE5yH493dhIiVXgQSnxZkSJTejbbeDp9AAAAN3YRIneRAHGfjxFhdsPju0AAABIiVXwRQHIZkSJRfjbbfDpzQAAAGrAWUQp2UE5yH1A3dhmRIlV2EiDZdAA223Q6a4AAABEicFJD6XRSNPiMclB9sBATA9FykgPRMpIiU0QRQnKZkSJVRjbbRDpggAAAEUB2GoBWUQpwTnOD0zOSYHJAAABAE0PvMFBgMhATA+8ykUPtsBFD0XB/slBiclBgOF/RTHSRTjBQQ+UwkUxwEwPrcL2wUBJD0XQSP/CD5TBgMH/TRnASQ+k0D9J99JNIcJMiVXAZoNlyADbbcDZydt9gNnh9kWJgNnA2eDZydvJ3dnbOEiBxKgAAABeXcOxAUQo2UjT4kUxwPbBQEwPRMJECdZmiXUITIlFANttAOvSVUiJ5WYPLsAPil4BAABmSA9+wEiJwUjB6TRBuP8HAABEIcFEOcEPg0ABAABJuQAAAAAAAACASSHBSI0MAGp/QVhMD73BSMHpNUGD8MBBg8AMSIXJRA9FwYXSeCG5/gcAAEQpwTnKfi1mD9sFMJAAAGYP6wU4kAAA6e8AAABBidJB99pEicH32TnKfitJweI0TCnQ6z5FicJBAdJ+LkWFwA+OogAAAEjB4jRIAcJmSA9uwum1AAAAasxZRCnBOcp9HGZJD27B6aEAAACJ0UjT4EwJyGZID27A6Y8AAABEAcJqAVkp0UE5ykEPTMpqQEFZTA+8yP/Jg+E/MdJBOckPlMJJuf///////w8ATCHISf/BRTHSRYXATQ9P0UkJwknT6kn/wknR6kj30kwh0mZID27KZg/bDVaPAABmD9sFXo8AAGYP68HrJEnB4jSxAUQowUjT4Ei5////////DwBIIcFMCdFMCclmSA9uwV3DVUiJ5UiLEQ+3SQhBuP9/AABMIcFMOcF0NYXJdUpIidBICch0SkgPpNEwSA+9wYPwP0jB4jBID73Sg/I/g8pASIXJD0XQuBLA//8p0OsmMcBJuQAAAAAAAACASTnRSRnIFf///3/rDY2BAcD//+sFuAAAAIBdw1VBV0FWQVVBVFZXU0iB7BgGAABIjawkgAAAAEQPKaWABQAARA8pnXAFAABEDymVYAUAAGZEDymNUAUAAGZEDymFQAUAAGYPKb0wBQAAZg8ptSAFAABIidZmRA8oEWZEDymVkAQAAEiLnZgEAABJid5Jwe4wQYHm/38AAEiJ2EjB6CAl////fz0ekixAD4eIAwAAZg8oBeKPAABIjZUQAQAAZg8pAkiNjQABAABmRA8pEeh2MAAADygNz48AAEiNlfAAAAAPKQpIjY3gAAAAZg8pAei5OAAAZg8oDb2PAABIjZXQAAAAZg8pCkiNjcAAAABmDykB6JY4AABmDyjwSI1NcGYPKQHouGcAAEiJx4Hn////f0QPKCWQjwAASI2VsAAAAEQPKSJIjY2gAAAAZg8pMej1LwAASI1NUGZEDykRSI1VYGYPKQLoQzgAAGYPKPhEDygdY48AAEiNlZAAAABEDykaSI2NgAAAAGYPKTHouC8AAGZEDyjASI1VQGYPKQJIjU0wZg8pOejnMwAAZkQPKMgPKAUyjwAASI1VIA8pAkiNTRBmRA8pCeigOAAAhcAPiMQEAABmDygFHY8AAEiNlTABAABmDykCSI2NIAEAAGZEDykJ6DA4AACFwA+PEAUAAEiNlVACAABmRA8pAkiNjUACAABmDyk56HYzAABmDykGZg8phfAEAAAPt4X+BAAAJf9/AABEifEpwYP5Mw+OqAMAAGYPKAXfjgAASI2VEAMAAGYPKQJIjY0AAwAAZg8pMejkLgAAZkQPKMBIjY3gAgAAZg8pOUiNlfACAABmDykC6A0zAABmRA8oyGYPKAWnjgAASI2VMAMAAGYPKQJIjY0gAwAAZg8pMeicLgAAZkQPKNBIjY3AAgAAZg8pOUiNldACAABmRA8pCujEMgAASI2VsAIAAGZEDykCSI2NoAIAAGYPKQHoqDIAAEiNjYACAABmRA8pEUiNlZACAABmDykC6IwyAABmRA8owEiNjWACAABmRA8pCUiNlXACAABmDykC6GsyAABmDykGZg8phQAFAAAPt4UOBQAAJf9/AABBKcZBg/54D4yZAgAAZg8oBfWNAABIjZXwAwAAZg8pAkiNjeADAABmDykx6NotAABmRA8owEiNjcADAABmRA8pCUiNldADAABmDykC6AIyAABmDyj4Zg8oBb2NAABIjZUQBAAAZg8pAkiNjQAEAABmDykx6JItAABmDyjwSI2NoAMAAGZEDykJSI2VsAMAAGYPKTrouzEAAEiNlZADAABmRA8pAkiNjYADAABmDykB6J8xAABIjY1gAwAAZg8pMUiNlXADAABmDykC6IQxAABmRA8owEiNjUADAABmDyk5SI2VUAMAAGYPKQLoZDEAAGYPKQbpswEAAEGB/v9/AAB1JkiJ6mZEDykSSI1N8GZEDykR6DwxAABmDykGZg8pRhAx/+nAAQAATIm1GAUAAEiJtRAFAABmDyg17YsAAGZBD1TySI1NwGZEDykR6NUJAABqF1opwkiNTdBmDykx6PgCAABmDyjwMfZIjb3gBAAATI21wAQAAEyNvdAEAABmDyg9tYsAAEyNpaAEAABMja2wBAAASIP+BHRjZg8pteAEAABIifnoeGQAAPIPKsDyDxGE9WgEAACJweg8RwAAZg8ptcAEAABmDymF0AQAAEyJ8UyJ+uh7MAAAZg8pvbAEAABmDymFoAQAAEyJ4UyJ6ugXLAAAZg8o8Ej/xuuXSI1N4GYPKTHoQnAAAPIPEYWIBAAAagVBWWYPV8DyQg8QjM1gBAAASf/JZg8uyHUCe+tMi4UYBQAAQYHA6r///0H/wUjHRCQgAwAAAEiNjWgEAABMjXWoTIny6DPv//+Jx/JBDxAO8kEPEHYI8kEPWHYQZg8owfIPWMZmDyjQ8g9c0fIPXPLo13EAAEiF20iLtRAFAAAPiJwAAABmDykGZg8oxui6cQAA6zxmQQ8o+UiNlVAEAABmDykCSI2NQAQAAGYPKTnojS8AAEiNlTAEAABmRA8pAkiNjSAEAABmDykB6HEvAABmDylGEIn4Dyi1IAUAAA8ovTAFAABEDyiFQAUAAEQPKI1QBQAARA8olWAFAABEDyidcAUAAEQPKKWABQAASIHEGAYAAFtfXkFcQV1BXkFfXcNmDyg9D4oAAGYPV8dmDykGZg8oxugScQAAZg9Xx2YPKUYQ99/rjv/PZg8oBXeKAABIjZUwAgAAZg8pAkiNjSACAABmDykx6PAyAABmDyjwSI2VEAIAAEQPKSJIjY0AAgAAZg8pAehtKgAASI2NwAEAAGZEDykRSI2V0AEAAGYPKQLotTIAAGYPKPhIjZXwAQAARA8pGkiNjeABAADrdv/HZg8oBe+JAABIjZWwAQAAZg8pAkiNjaABAABmDykx6HgyAABmDyjwSI2VkAEAAEQPKSJIjY2AAQAAZg8pAej1KQAASI2NQAEAAGZEDykRSI2VUAEAAGYPKQLoPTIAAGYPKPhIjZVwAQAARA8pGkiNjWABAABmDykx6LopAABmRA8owOln+v//VVZXU0iB7NgAAABIjawkgAAAAA8pdUCJ1g8oMQ8pddBIi33QSItd2EiNVbAPKTJIjU2gDykx6AMyAACFwA+F7wEAAA8pdcAPt0XOuf9/AAAhyDnID4PYAQAASLgAAAAAAAAAgEiJ2kjB6jCB4v9/AAB1MUiJ2UgPpPkBSI0UP0wPvcFBg/A/an9BWUwPvcpBg/E/QYPBQEiFyUUPRchqD1pEKcpIIdiF9ngeuf5/AAAp0TnOfjkPVDUTiQAAD1Y1LIkAAOlpAQAAQYnwQffYidH32TnOfkBJweAwSIl9AEwpw0iJXQgPKHUA6UMBAABBidBBAfB+O4XSD474AAAASMHmMEiJfRBIAd5IiXUYDyh1EOkbAQAAapBZKdE5zn09SIlF+EiDZfAADyh18OkAAQAAifFID6X7SNPnMclA9sZASA9F30gPRM9IiU0wSAnDSIldOA8odTDp1QAAAAHWagFZKfFBOchBD0zIakBYSA+8wwRATA+8x0QPtshFD0XI/slBichBgOB/McBFOMEPlMBJuP///////wAASSHYRTHJhdJBD5/BScHhME0JwUwPrc9J0+kx0vbBQEkPRflJD0TRSIPHAUiD0gBID6zXAUjR6kj30Egh+EiJVehIiUXgDyhF4A9UNeWHAAAPVAXuhwAAD1bG6z6xASjRSA+l+0jT50nB4DAx0vbBQEgPRd9ID0TXSLn///////8AAEgh2UwJwUiJVSBICcFIiU0oDyh1IA8oxg8odUBIgcTYAAAAW19eXcNVVldTSIPsWEiNbCRQSInWZkgPfsNIidhIweggQYnAQYHg////f0GB+HpqD0B3TiX//w8APfshCQB0cUGB+HzZAkB3f0iF2w+IAgIAAPIPWAX2hwAA8g8QDfaHAABmDyjQ8g9Y0fIPERbyD1zC8g9YwfIPEUYIagHphwIAAEGB+DxGHEBzHUGB+L39FUBzbUGB+HzZEkAPhZEAAAC5fNkSQOsMQYH4+yE5QXNgRInBZg8oyEmJ8EiDxFhbX15d6WACAABIhdsPiLMBAADyD1gFV4cAAPIPEA1XhwAAZg8o0PIPWNHyDxEW8g9cwvIPWMHyDxFGCGoC6QgCAABBgfj7IRlAdWG5+yEZQOujQYH4AADwfw+ChgAAAPIPXMDyDxEG8g8RRggxwOnYAQAASIXbD4h2AQAA8g9YBc2GAADyDxANzYYAAGYPKNDyD1jR8g8RFvIPXMLyD1jB8g8RRghqA+meAQAASIXbD4hqAQAA8g9YBXSGAADyDxANdIYAAGYPKNDyD1jR8g8RFvIPXMLyD1jB8g8RRghqBOllAQAASLj///////8PAEgh2Ei5AAAAAAAAYEFICcFmSA9uwTHA8g8QDfOFAABIg/gCdBtmD+bQ8w/m0mYPE1TF4PIPXMLyD1nBSP/A69/yDxFF8GoEQVlmD1fAQY1B/vIPEEzF4EH/yWYPLsh1AnvrQcHoFEGBwOr7//9Ix0QkIAEAAABIjU3gSI19+EiJ+ujA6P//8g8QB0iF2w+I0gAAAPIPEQbyDxBFAPIPEUYI6bYAAADyD1gF5IUAAPIPEA3khQAAZg8o0PIPWNHyDxEW8g9cwvIPWMHyDxFGCGr/6YUAAADyD1gFlIUAAPIPEA2UhQAAZg8o0PIPWNHyDxEW8g9cwvIPWMHyDxFGCGr+61jyD1gFR4UAAPIPEA1HhQAAZg8o0PIPWNHyDxEW8g9cwvIPWMHyDxFGCGr96yvyD1gF+oQAAPIPEA36hAAAZg8o0PIPWNHyDxEW8g9cwvIPWMHyDxFGCGr8WEiDxFhbX15dw2YPFkUAZg9XBbCEAABmDxEG99jr4lVIieXyDxAFLIUAAPIPWcHyD1gFKIUAAPIPWAUohQAA8g8swPIPEBUkhQAA8g9Z0PIPWNHyDxAdHIUAAPIPWdhmDyji8g9c4/IPEC0QhQAAZg8u7HYM/8jyD1gFGIUAAOsUZg8uJf6EAAB2Kv/A8g9YBfqEAADyDxAV0oQAAPIPWdDyD1jK8g8QHcqEAADyD1nYZg8o0WYPKMryD1zL8kEPEQhmSA9+ykjB6jSB4v8HAADB6RRBiclBKdFBg/kQD46OAAAA8g8QDbOEAADyD1nIZg8o4vIPXOHyDxAdp4QAAPIPWdjyD1zU8g9c0fIPXNpmDyjM8g9cy/JBDxEIZkgPfspIweo0geL/BwAAKdGD+TJ8O/IPEA10hAAA8g9ZyGYPKNTyD1kFbIQAAPIPXNHyD1zi8g9c4fIPXMRmDyjK8g9cyPJBDxEIZg8o2OsEZg8o1PIPXNHyD1zT8kEPEVAIXcNVSInlZg9vAWYP2wX1hAAAZkgPfsJmD3DA7mZID37BSInISMHoMEg9/38AAHQshcB1QUiJ0EgJyHRASA+9wYPwP0gPvdKD8j+DykBIhckPRdC4EcD//ynQ6yUxwEj32ki6AAAAAAAA/39IGcoV////f+sMBQHA///rBbgAAACAXcNVVldIgeyAAQAASI2sJIAAAABIic7bKtnA231AD7dFSCX/fwAAZj3/f3UX3ODZwNs+234QSInwSIHEgAEAAF9eXcPZwNnh2y3YhgAA3+nd2HY2Zj2/Pw+DvAAAAGaFwHUd2cDYDcuGAADbfdBIjUXQSI1NyEiJAUiJjegAAADZwNs+2ejeweup231QSI1NUEiNVaDoaOH//4nH222g2cDbfSjbbbDZwNt9NNt9cNt9YEiNTeBIjVVgTI1FcGoBQVnoVAQAANtt4Nu99AAAANttNNu9kAAAANttKNu9gAAAAEiNTfBIjZWAAAAATI2FkAAAAOgEAwAA223wg+cDSI0FNIYAAEhjDLhIAcH/4dut9AAAAOkX////2e7bvbAAAADZwNu9oAAAAEiJ6UiNlaAAAABMjYWwAAAARTHJ2730AAAA6NIDAADbbQDbPtnu273QAAAA2630AAAA273AAAAASI1NEEiNlcAAAABMjYXQAAAA6IQCAADbbRDpsv7//9ut9AAAANng2z7rF9ng2z7brfQAAADpl/7//9s+2630AAAA2eDpiP7//1VWV1NIg+xYSI1sJFBmDyl98GYPKXXgSInOZg9+yInBgeH///9/gfnaD0k/dyqB+QAAgDlzZIH5AAAQAA+DpgAAAPMPEAWthQAA8w9ZwfMPEUXc6aEAAACB+dJTe0BzV/MPWvGB+eTLFkAPg5kAAACFwA+IQQEAAPIPED1rhQAA8g9c/mYPKMfoOwIAAPMPEQZmDyjH6UABAADzD1rxDyjG6HgCAADzDxEGDyjG6BYCAADpKAEAAIH51jHiQA+DgQAAAPMPWvGB+eDtr0APg4sAAACFwA+IHQEAAPIPWDXwhAAA6dkAAADzDxAFA4UAAPMPWMHzDxFF2PMPEQ7HRgQAAIA/6dsAAAD30MHoH0iNDcaEAADyD1g0wWYPKMbo+wEAAGYPKPhmDyjG6JgBAAAPFPhmD1c9cIQAAGYPEz7poAAAAIH5//9/f3Yo8w9cyfMPEQ7zDxFOBOmGAAAA99DB6B9IjQ1RhAAA8g9YNMHpKv///0iNfdBmD2/BSIn66I7h//+Jw/IPED9mDyjH6IsBAABmDyjwZg8ox+goAQAAg+MDSI0FUYQAAEhjDJhIAcH/4fMPETbrJvIPWDUqhAAAZg8oxuj+AAAAZg9XBdmDAADzDxEGZg8oxug/AQAA8w8RRgRIifAPKHXgDyh98EiDxFhbX15dw/IPWDXLgwAAZg8oxui/AAAA8w8RBmYPKMboCAEAAGYPVwWNgwAA678PFPBmD1c1gIMAAGYPEzbrs2YPVwVygwAA8w8RBusM8w8RBmYPVzVggwAA8w8RdgTrklVIieXbKtnA2MnZwNwNp4MAANwFqYMAANjJ3AWpgwAASInI2MncBaaDAABB2yjZydjK3AWhgwAA2MrcBaGDAADYytstoYMAAN7B2cLYDaeDAADZydjL2ejZwNjj3OnZyd7j2czeydnM3srZy97h3sLewds5XcNVSInl8g9ZwGYPKMjyD1nI8g8QFXODAADyD1nQ8g9YFW+DAADyDxAdb4MAAPIPWdjyD1gda4MAAPIPWcHyD1kNZ4MAAPIPWMvyD1nC8g9YwfIPWsBdw1VIieVmDyjI8g9ZyGYPKNHyD1nRZg8o2PIPWdlmDxTJZg9ZDTWDAABmD1gNPYMAAPIPWdNmDxTTZg9Z0WYPKMpmDxXK8g9YyPIPWMryD1rBXcNVSInl2yrZwNjJ2cDcDRmDAADcBRuDAADYydwFG4MAAEiJyNjJ3AUYgwAAQdso2cnYytwFE4MAANnD2MvZydjL3AUNgwAA2MvcBQ2DAABFhcl0ItnC2A0IgwAA2cnYyt7p3svZyt7h2y3+ggAA3srewd7p6xLd2tnK3snbLfqCAADewd7J3sHbOF3DVUFWVldTSIHssAEAAEiNrCSAAAAARA8phSABAAAPKb0QAQAADym1AAEAAEyJxkiJ1w8oMQ8pteAAAAAPt53uAAAAgeP/fwAAZoH7/391IUiNlcAAAAAPKTJIjY2wAAAADykx6KEgAAAPKPDpUAEAAA8oBYmCAAAPVMYPKA2PggAASI1V0A8pCkiNTcAPKQHoTyUAAIXAeWpmgfuPPw+DygAAAGaF23U1DygFgYIAAEiNlYAAAAAPKQJIjU1wDykx6PsbAABIjUWgDykASI2N2AAAAEiJAUiJjfgAAAAPKAVcggAASI2VoAAAAA8pAkiNjZAAAAAPKTHoJyQAAOm+AAAASI1N4A8pMUyNdaBMifLof+r//4nDQQ8oNkUPKEYQSInqRA8pAkiNTfAPKTFqAUFY6PQFAAAPKPhIjVUgRA8pAkiNTRAPKTHo+gEAAA8o8IPjA0iNBfWBAABIYwyYSAHB/+EPVz21gQAA61BFD1fASI1VQEQPKQJIjU0wDykxRTHA6KMFAAAPKPhIjVVgRA8pAkiNTVAPKTHoqQEAAOsQDygFeIEAAA9X+A9X8A8oxg8o9+sKD1c1Y4EAAA8oxw8pNw8pBg8otQABAAAPKL0QAQAARA8ohSABAABIgcSwAQAAW19eQV5dw1VBVlZXU0iD7HBIjWwkcEQPKUXwZg8pfeAPKXXQTInGSInXZg9v8GZID37ASMHoICX///9/Pfsh6T93KD2eoEY+czU9AAAQAA+DrwAAAPIPEAVAgQAA8g9ZxvIPEUXI6aoAAAA9///vf3Yx8g9c9mYPKMbpxgAAAA9XyWYPKMZFMcDoiAkAAGYPKPgPV8lmDyjG6NoIAADpkAAAAEiNXbBmD2/GSIna6L/y//9BicbyDxAz8kQPEEMIagFBWGYPKMZBDyjI6EUJAABmDyj4Zg8oxkEPKMjolggAAGYPKPBBg+YDSI0FtIAAAEpjDLBIAcH/4WYPVz17gAAA6z3yDxAFgYAAAPIPWMbyDxFFwPIPEAV4gAAA6yZmDygFVoAAAGYPV/hmD1fwZg8oxmYPKPfrDGYPVzU8gAAAZg8ox/IPETfyDxEGDyh10A8ofeBEDyhF8EiDxHBbX15BXl3DVUiB7HAEAABIjawkgAAAAEQPKaXgAwAARA8pndADAABEDymVwAMAAEQPKY2wAwAARA8phaADAAAPKb2QAwAADym1gAMAAEQPKBpEDygRSI2VcAMAAEQPKRJIjY1gAwAARA8pEegPGQAADyjwDygF5X8AAEiNlRADAAAPKQJIjY0AAwAADykx6OwYAAAPKA3VfwAASI2V0AIAAA8pCkiNjcACAAAPKQHoMCEAAEiNjYACAAAPKTFIjZWQAgAADykC6LMYAAAPKA2sfwAASI2VUAIAAA8pCkiNjUACAAAPKQHo9yAAAEiNjSACAAAPKTFIjZUwAgAADykC6HoYAAAPKA2DfwAASI2VEAIAAA8pCkiNjQACAAAPKQHoviAAAEiNjeABAAAPKTFIjZXwAQAADykC6EEYAAAPKA1afwAASI2V0AEAAA8pCkiNjcABAAAPKQHohSAAAEiNjaABAAAPKTFIjZWwAQAADykC6AgYAAAPKA0xfwAASI2VkAEAAA8pCkiNjYABAAAPKQHoTCAAAEiNjWABAAAPKTFIjZVwAQAADykC6M8XAAAPKA0IfwAASI2VUAEAAA8pCkiNjUABAAAPKQHoEyAAAEiNjSABAAAPKTFIjZUwAQAADykC6JYXAAAPKA3ffgAASI2VEAEAAA8pCkiNjQABAAAPKQHo2h8AAEiNjeAAAAAPKTFIjZXwAAAADykC6F0XAAAPKA22fgAASI2V0AAAAA8pCkiNjcAAAAAPKQHooR8AAEiNjaAAAAAPKTFIjZWwAAAADykC6CQXAAAPKA2NfgAASI2VkAAAAA8pCkiNjYAAAAAPKQHoaB8AAEiNTWAPKTFIjVVwDykC6PEWAAAPKA1qfgAASI1VUA8pCkiNTUAPKQHoOx8AAEiNTSAPKTFIjVUwDykC6MQWAABEDyjADygFSX4AAEiNlTADAAAPKQJIjY0gAwAADykx6KAWAABEDyjIRA8oJTR+AABIjY3gAgAARA8pIUiNlfACAAAPKQLowxoAAA8o+EiNjaACAABEDykhSI2VsAIAAA8pAuimGgAASI2VcAIAAEQPKQpIjY1gAgAADykB6IwaAABEDyjISInpDykxSI1VEEQPKQLoLBYAAA8o8EiNlVADAABEDykaSI2NQAMAAEQPKRHoDhYAAEiNVfAPKQJIjU3gDykx6EQaAABIjU3ARA8pCUiNVdAPKQLoSx4AAEiNTaAPKTlIjVWwDykC6DgeAAAPKLWAAwAADyi9kAMAAEQPKIWgAwAARA8ojbADAABEDyiVwAMAAEQPKJ3QAwAARA8opeADAABIgcRwBAAAXcNVVkiB7MgEAABIjawkgAAAAEQPKZ0wBAAARA8plSAEAABEDymNEAQAAEQPKYUABAAADym98AMAAA8pteADAABEicZEDygaRA8oEUiNlVACAABEDykSSI2NQAIAAEQPKRHoMBUAAA8o+EiNjQACAABEDykRSI2VEAIAAA8pAugTFQAADyjwDygFuXwAAEiNlTACAAAPKQJIjY0gAgAADyk56PAUAAAPKA2pfAAASI2V8AEAAA8pCkiNjeABAAAPKQHoNB0AAEiNjcABAAAPKTlIjZXQAQAADykC6LcUAAAPKA2AfAAASI2VsAEAAA8pCkiNjaABAAAPKQHo+xwAAEiNjYABAAAPKTlIjZWQAQAADykC6H4UAAAPKA1XfAAASI2VcAEAAA8pCkiNjWABAAAPKQHowhwAAEiNjUABAAAPKTlIjZVQAQAADykC6EUUAAAPKA0ufAAASI2VMAEAAA8pCkiNjSABAAAPKQHoiRwAAEiNjQABAAAPKTlIjZUQAQAADykC6AwUAAAPKA0FfAAASI2V8AAAAA8pCkiNjeAAAAAPKQHoUBwAAEiNjcAAAAAPKTlIjZXQAAAADykC6NMTAAAPKA3cewAASI2VsAAAAA8pCkiNjaAAAAAPKQHoFxwAAEiNjYAAAAAPKTlIjZWQAAAADykC6JoTAAAPKA2zewAASI1VcA8pCkiNTWAPKQHo5BsAAEiNTUAPKTlIjVVQDykC6G0TAAAPKA2WewAASI1VMA8pCkiNTSAPKQHotxsAAEiJ6Q8pOUiNVRAPKQLoQRMAAA8oDXp7AABIjVXwDykKSI1N4A8pAeiLGwAASI1NwA8pOUiNVdAPKQLoFBMAAA8oDV17AABIjVWwDykKSI1NoA8pAeheGwAARA8owIX2D4TkAAAADygFR3sAAEiNlVADAAAPKQJIjY1AAwAARA8pGejNEgAARA8oyEiNlRADAABEDykCSI2NAAMAAA8pMeivEgAASI2V8AIAAA8pAkiNjeACAABEDykJ6N4WAABIjY3AAgAADyk5SI2V0AIAAA8pAuh8EgAASI2VsAIAAEQPKRpIjY2gAgAADykB6KsWAAAPKPgPKAXIegAASI2VMAMAAA8pAkiNjSADAAAPKTHoPxIAAEiNlZACAAAPKQJIjY2AAgAADyk56IoaAABIjY1gAgAARA8pEUiNlXACAAAPKQLoVRYAAOttSI2V0AMAAEQPKQJIjY3AAwAADyk56PARAAAPKA1pegAASI2VsAMAAA8pCkiNjaADAAAPKQHoNBoAAEiNjYADAAAPKTFIjZWQAwAADykC6LcRAABIjY1gAwAARA8pEUiNlXADAAAPKQLoARoAAA8oteADAAAPKL3wAwAARA8ohQAEAABEDyiNEAQAAEQPKJUgBAAARA8onTAEAABIgcTIBAAAXl3DVUiJ5fIPWchmDyjQ8g9Z0PIPEB3deQAA8g9Z2vIPWB3ZeQAAZg8o4vIPWdryD1gd0XkAAPIPWeLyD1na8g9Z5PIPEAXFeQAA8g9ZwvIPWAXBeQAA8g9ZwvIPWAW9eQAA8g9ZxPIPWMPyDxAdtXkAAPIPWdryDxAlsXkAAGYPKOzyD1zr8g9c5fIPXOPyD1nC8g9cwfIPWMTyD1jFXcNVSInlZg8o0PIPWdBmDyja8g9Z2vIPEC17eQAA8g9Z6vIPWC13eQAA8g9Z6vIPWC1zeQAA8g9Z2vIPECVveQAA8g9Z4vIPWCVreQAA8g9Z4/IPWOVmDyjY8g9Z2kWFwHQu8g8QLVZ5AADyD1np8g9Z4/IPXOzyD1nV8g9c0fIPWR1CeQAA8g9Y2vIPXMPrFPIPWdTyD1gVNHkAAPIPWdryD1jDXcNVVkiB7HgBAABIjawkgAAAAEiJztsq2cDbfTAPt0U4Jf9/AABmPf9/dRHc4Ns+SInwSIHEeAEAAF5dw9nA2eHbLe14AADf6d3YdjhmPd8/D4OGAAAA2cDYDeV4AADZwdgF4XgAAGaFwNrJ3dnbfdBIjUXQSI1NyEiJAUiJjfAAAADrqdt9QEiNTUBIjVWg6CvP//+D4APbbaDbbbBIjQ2neAAASGMEgUgByP/g273AAAAA272wAAAASI1NEEiNlbAAAABMjYXAAAAAagFBWegE8v//220Q6VH////Z7tu94AAAANu90AAAAEiNTSBIjZXQAAAATI2F4AAAAEUxyejU8f//220g6SH////bvYAAAADbfXBIjU3wSI1VcEyNhYAAAABqAUFZ6Kvx///bbfDrGtt9YNt9UEiNTeBIjVVQTI1FYOhx8P//223g2eDp2v7//9u9oAAAANu9kAAAAEiJ6UiNlZAAAABMjYWgAAAA6EXw///bbQDpsP7//1VWSIPsOEiNbCQwZg9+wInBgeH///9/gfnaD0k/dyaB+QAAgDlzR4H5AACAAHNu8w8QDRN4AADzD1nI8w8RTQTp6AAAAIH50lN7QHMn8w9awIH55MsWQHNXhcAPiLcAAADyD1gF1XcAAOnOAAAA8w9awOt2gfnWMeJAc0/zD1rAgfng7a9Ac1GFwA+IpAAAAPIPWAWGdwAA6YMAAADzDxANoXcAAPMPWMjzDxFNAOt999DB6B9IjQ1qdwAA8g9YBMFmD1cFLXcAAOsfgfn//39/diLzD1zA61T30MHoH0iNDSF3AADyD1gEwUiDxDheXekU8P//SI11+EiJ8uj8z///g+AD8g8QBkiNDT93AABIYwSBSAHI/+DyD1gFFncAAOiO7///Zg9XBbl2AABIg8Q4Xl3D8g9YBdp2AABIg8Q4Xl3pbO///1VWSIHsyAEAAEiNrCSAAAAADym9MAEAAA8ptSABAAAPKDEPKbUAAQAAD7e1DgEAAIHm/38AAGaB/v9/dTdIjZXgAAAADykySI2N0AAAAA8pMehSEQAADyjwDyjGDyi1IAEAAA8ovTABAABIgcTIAQAAXl3DDygFpHYAAA9Uxg8oDap2AABIjVXQDykKSI1NwA8pAejqFQAAhcB5c2aB/sc/D4OpAAAADygFoXYAAEiNlaAAAAAPKQJIjY2QAAAADykx6JgMAAAPKPgPKAWOdgAASI2VwAAAAA8pAkiNjbAAAAAPKTHo2RQAAGaF9nQDDyj4SI1FoA8pOEiNjfgAAABIiQFIiY0YAQAA6Ur///9IjU3gDykxSI11oEiJ8ugR2///g+ADDygGDyhOEEiNDTx2AABIYwSBSAHI/+BIjVVgDykKSI1NUA8pAWoBQVjrFw9XwEiNlYAAAAAPKQJIjU1wDykxRTHA6F72///p6/7//0iNVSAPKQpIjU0QDykBagFBWOhC9v//6xJIieoPKQpIjU3wDykB6Evy//8PKPAPVzWZdQAA6a7+//9IjVVADykKSI1NMA8pAegp8v//6Zn+//9VVkiD7EhIjWwkQGZID37ASMHoICX///9/SD37Iek/dyE9AABQPnMnPQAAEABzYPIPEA2ddQAA8g9ZyPIPEU0A63g9///vf3YY8g9cwOtrZg9XyUUxwEiDxEheXel0+v//SI116EiJ8ujE4///g+AD8g8QBvIPEE4ISI0NXHUAAEhjBIFIAcj/4GoBQVjrx/IPEA01dQAA8g9YyPIPEU346xhqAUFY6Cr6///rBeiF+f//Zg9XBQJ1AABIg8RIXl3DSIPESF5d6Wv5//9VVkiJ5UiJyEyLAkiLUghJidFJwekwMclFicpBgeL/fwAAdD1Bgfr/fwAAD4S7AAAASLn///////8AgEghyki5AAAAAAAA/j9ICcpBgeH/fwAAQYHBAsD//0SJyemLAAAASbn///////8AAEmJ0k0hyk0JwnR2SInRTA+kwRBMD73ZSYPzP02JwknB4hBND73SSYPyP0mDykBIhclND0XTQY1KAUm7AAAAAAAAAIBJIdNMD6XCSdPgMfb2wUBJD0XQTA9FxkwhykGA+m9ID0PWTA9DxkwJ2ki5AAAAAAAA/j9ICcq5AsD//0Qp0UyJAEiJUAiJSBBeXcNVSInlSInIZkgPfspJidBJweg0MclFicFBgeH/BwAAdDpBgfn/BwAAD4SCAAAASLn///////8PgEghyki5AAAAAAAA4D9ICcpBgeD/BwAAQYHAAvz//0SJwetVSYnQScHgDHRMTQ+9wEmD8D9BjUgBSbkAAAAAAAAAgEkh0UjT4ki5////////DwBIIdFFMdJBgPgzTA9C0U0Jyki6AAAAAAAA4D9MCdK5Avz//0QpwUiJEIlICINgDABdw1VQSInlZkgPfsBIicFIwek0geH/BwAASIH5MwQAAA+TwmYPV8lmDy7BQQ+bwEEPlMFFIMFBCNF0BkiDxAhdw/IPEA00fAAA8g8QFTR8AABIhcB5BvIPWNDrBPIPWMjyD1jK8g9cyIH5/gMAAHcY8g8RTQBmD1fASIXAeb3yDxAFB3wAAOuzZg9X0mYPLsryD1jBdqXyD1gF73sAAOubVUiJ5Q8uwA+KHQEAAGYPfsCJwYHh////f4H5AACAfw+DBQEAAEGJwUGB4QAAAICNDABqP0FYRA+9wcHpGEGD8OBBg8AJhclED0XBhdJ4Ibn+AAAARCnBOcp+MmYP2wXqfgAAZg/rBfJ+AADpugAAAESJwffZOcp/IWrpWUQpwTnKfStmQQ9uwemdAAAARYnCQQHSfhNFhcB+dsHiFwHCZg9uwumCAAAAidHT4Ot1QYnRQffZRAHCagFZKdFBOclBD0zJaiBaD7zQ/8mD4R9FMck5ykEPlMEl//9/ADHSRYXAD5/CweIXCcLT6v/C0epB99FBIdFmQQ9uyWYP2w07fgAAZg/bBUN+AABmD+vB6xpBweIXsQFEKMHT4CX//38ARAnQRAnIZg9uwF3DVVZIgexYAQAASI2sJIAAAABIic7bKtnA230QD7dFGCX/fwAAZj3/f3UR3ODbPkiJ8EiBxFgBAABeXcPZwNnh2y18fgAA3+nd2HYMZj2/P3NX2ejewevV230gSI1NIEiNVaDohsb//4PgA9ttoNttsEiNDVp+AABIYwSBSAHI/+DbvaAAAADbvZAAAABIjU3wSI2VkAAAAEyNhaAAAADoRej//9tt8OuE2e7bvcAAAADbvbAAAABIielIjZWwAAAATI2FwAAAAOgc6P//220A6Vj////bfWDbfVBIjU3QSI1VUEyNRWDo/ef//9tt0OtH231A230wSI1NwEiNVTBMjUVAagFBWej76P//223A6Rn////bvYAAAADbfXBIjU3gSI1VcEyNhYAAAABqAUFZ6NLo///bbeDZ4Onu/v//VVZIg+w4SI1sJDBmD37AicGB4f///3+B+doPST93IoH5AACAOXNO8w9YBcR9AADzDxFFBPMPEAW7fQAA6YwAAACB+dJTe0BzO/MPWsCB+ePLFkB2VvfQwegfSI0Ngn0AAPIPWATB6LXn//9mD1cFMH0AAOtY8w9awEiDxDheXemc5///gfnWMeJAczWB+d/tr0B2QPMPWsD30MHoH0iNDSd9AADyD1gEwevOhcB4ZPIPEA0kfQAA8g9cyGYPKMHrbIH5//9/f3Yd8w9cwEiDxDheXcOFwHhF8w9awPIPWAXffAAA60dIjXX4SIny6HjH//+D4APyDxAGSI0N+3wAAEhjBIFIAcj/4GYPVwWifAAA6xryD1gFwHwAAOsQ8w9ayPIPEAWafAAA8g9cwUiDxDheXek+5///VVZIgex4AQAASI2sJIAAAAAPKbXgAAAADygxDym10AAAAA+3td4AAACB5v9/AABmgf7/f3UeSI2VwAAAAA8pMkiNjbAAAAAPKTHo1QgAAOn3AAAADygFgHwAAA9Uxg8oDYZ8AABIjVXQDykKSI1NwA8pAeiGDQAAhcB5LGaB/o8/c2IPKAWBfAAASI2VoAAAAA8pAkiNjZAAAAAPKTHonAwAAOmjAAAASI1N4A8pMUiNdaBIifLo9NL//4PgAw8oBg8oThBIjQ1PfAAASGMEgUgByP/gSI1VYA8pCkiNTVAPKQHrFA9XwEiNlYAAAAAPKQJIjU1wDykx6GXq///rS0iNVSAPKQpIjU0QDykB6FDq///rL0iJ6g8pCkiNTfAPKQFqAUFY6Bvu///rHkiNVUAPKQpIjU0wDykBagFBWOgC7v//D1cFsHsAAA8oteAAAABIgcR4AQAAXl3DVVZIg+w4SI1sJDBmSA9+wEjB6CAl////f0g9+yHpP3cePZ6gRj5zJPIPWAWvewAA8g8RRQDyDxAFqnsAAOtbPf//7392FPIPXMDrTg9XyUiDxDheXenA8f//SI118EiJ8uiu2///g+AD8g8QBvIPEE4ISI0NdnsAAEhjBIFIAcj/4GoBQVjoLfL//+sF6Ijx//9mD1cFNXsAAEiDxDheXcNqAUFYSIPEOF5d6Qjy//9VVkiD7DhIjWwkMA8pdfCJ1g8o8OiDSAAADy7AD4o+AQAAZg/FxgCJwYHh/38AAGaB+QB8D4MmAQAAicKB4gCAAABBicBBwegKQYPgH3UcjQwAZkG4HwBmRA+9wUGD8A9BD7fIagVBWEEpyIX2eChqHllEKcE5zg+OqgAAAGYP2zVKewAAZg/EBVF7AAAAZg/rxunNAAAARInB99k5zg+PkAAAAGr2WUQpwTnOD4ypAAAAifL32kQBxmoBWSnxOcoPTMqJwoHKAAABAEQPvMr/yYPhDzHSZkE5yQ+UwiX/AwAARTHJRYXAQQ+fwUHB4QpBCcG4//8AAEEhwUHT6UH/wUEhwUHR6ffSRCHKZg/EwgBmD9sFpnoAAGYP2zWuegAAZg/r8Os5RYnBQQHxfhFFhcB+EsHmCgHwZg/E8ADrIInx0+DrE0HB4QqxAUQowdPgJf8DAABECcgJwmYPxPIAZg9vxg8odfBIg8Q4Xl3DVUFXQVZBVUFUVldTSIPsGEiNbCQQQYnVSYnUScHsIESJy02Jz0nB7yBMifhJD6/ESIlF8EmJ3k0Pr/REicdJweggTInASQ+vxEiJRfhMD6/nTInoSQ+vx0iJ2kkPr9VIiVUATInqSQ+v0EwPr+9BiclJicpJweogTInWSQ+v90mJ200Pr9pMicFJD6/KTA+v100Pr/lJD6/ZTQ+vwUkPr/lFMclNAdBBD5LBRTHSTAHpQQ+SwkUx7UwB4kEPksVMAfpJg9UATAHaSYPVAEUx/0wB8EEPksdND6TBIEnB4CBFMfZIA3X4QQ+SxkgDdQBJg9YASAHZTBHWTBN18EUx0kwByUEPksJJD6TVIEjB4iBJAfhJiclJEdFJD6THIEjB4CBIAfBNEfdMAehJg9cASAHKSItNeEyJAUyJSQhMEdBIi01wSIkBSYPXAEyJeQhIg8QYW19eQVxBXUFeQV9dw1VBV0FWQVVBVFZXU0iB7DgBAABIjawkgAAAAEm6////////AAAPKAkPKAIPKU3ASItFwEyLXchNidxJwewwuv9/AABBIdQPKUXQTItF0EiLTdhJic1Jwe0wQSHVSInPTDHfSLsAAAAAAAAAgEgh30yJ2kwh0kmJyU0h0UG6AYD//0ONNBRqAUFegf4CgP//D4KNAAAARTH/RQHqQYH6AoD//3J+SA+66jBND6TBD0nB4A9JD7rpP0iNjaAAAABIiUwkKEiNdbBIiXQkIEiJwejM/f//RQHsQ40EJwUBwP//SIsWTItGCEkPuuAwD4KCAAAASIuNoAAAAEyLjagAAABJD6TQAUwPpMoBSQ+kyQFIAclIiY2gAAAATImNqAAAAOtUDylN4EyLfeBJuv////////9/TIt16E0h1g8pRfBJg/8BTIn2SLsAAAAAAAD/f0gZ3nJ8SImFgAAAAEkPuusvTImdiAAAAA8ohYAAAADp3QEAAP/ASLkAAAAAAAD/fz3+fwAAfhVICc9IiX0oSINlIAAPKEUg6bUBAACFwA+OgAAAAGr/WUghyki5////////AABJIchIweAwTAnASIuNoAAAAEyLjagAAADpQwEAAEyLXfBMI1X4SYP7AUyJ1kgZ3nIWTIlFcEgPuukvSIlNeA8oRXDpVgEAAEyJ8Ugx2UwJ+XU5TQnTD4RWAQAASAnfSIl9aEiDZWAADyhFYOktAQAAQSnGQYP+f3Y/SIl9GEiDZRAADyhFEOkSAQAATInRSDHZTAnZD4UgAQAATQn3D4QOAQAASAnfSIl9WEiDZVAADyhFUOnlAAAATIuVoAAAAP7ITInWicFI0+ZMi52oAAAARTHJqEBIifFJD0XJSImNmAAAAEWJ902J3onBTQ+l1qhATA9F9kmJ1UnT5ahATInuSQ9F8U2JxEkPpdSoQE0PReVNicVEiflJ0+1B9sdATInoSQ9FwUwPrcJB9sdASQ9F1U2J2EnT6EH2x0BND0TITQ+t2kH2x0BND0XQTQnhSQnyMclMC7WYAAAAD5XBTAnRSYnISffYTBnLSIPSAEiD0ABJD7r5P0UxwEkJyUEPlMBBIdBBD7bISAHRSIPQAEiJTQBICfhIiUUIDyhFAEiBxDgBAABbX15BXEFdQV5BX13DDygFBHgAAOvjTQn3dFVNCdN0YkUx/0nB7jBqf0FbdWdID73yg/Y/TInZSA+9yIPxP4DBQEiF0g+2yQ9FzoDB8UgPpcJI0+Ax9vbBQEgPRdBID0XGD7bJagFBXkWJ90Epz+soSIl9SEiDZUAADyhFQOl3////SIl9OEiDZTAADyhFMOll////agFBXki7AAAAAAAAAIBJweowD4Wg/P//TQ+90UGD8j9ND73YQYPzP0GAw0BNhclBD7bLQQ9FyoDB8U0PpcFJ0+BFMdL2wUBND0XITQ9Fwg+2yUEpz0H/x+lb/P//VUiD7EBIjWwkQA8oAQ8oCg9XDUB3AABIjVXwDykKSI1N4A8pAegHAAAAkEiDxEBdw1VBV0FWQVVBVFZXU0iB7IgAAABIjawkgAAAAA8oAg8oCQ8pTYBMi12ASItFiA8pRZBIi02QSIt1mEmJwUkPuvE/SInySA+68j9JugAAAAAAAAGAT40EEUmD+wFNGdBqAV9JuAAAAAAAAP9/D4JzAQAASo0cEkg5+UwZ0w+CYwEAAEk5y0kZ0UmJz00PQvtIifNID0LYTA9C2UiJwkgPQtZJuv///////wAASYnRScHpMEmJ3UnB7TC5/38AAEEhzUmJ1k0h1mp/QVpqAUFcQSHJdUBND73OQYPxP0yJ0UkPvcuD8T+AwUBNhfYPtslBD0XJgMHxTQ+l3knT40UxyfbBQE0PRfNND0XZD7bJRYnhQSnJSLn///////8AAEghy0WF7XVATA+960GD9T9ND73XQYPyP0GAwkBIhdtBD7bKQQ9FzYDB8UwPpftJ0+dFMdL2wUBJD0XfTQ9F+g+2yUEpzEWJ5Um8AAAAAAAAAIBIMcZND6TeA0wPpPsDScHnA0gPuuszRInIRCnodFKD+H8Ph5YAAACJwfbZSYnaTQ+l+kyJ/0jT50Ux7fbBQEwPRddJD0X9RTHATAnXQQ+VwInBSQ+t30jT66hATA9F+0kPRd1NCcdJuAAAAAAAAP9/TIn/60pJg/sBTYnKTRnCchZMiV3wSA+66C9IiUX4DyhF8OmeAQAASIP5AUmJ0k0Zwg+CMQEAAEiJTeBID7ruL0iJdegPKEXg6XgBAAAx20wh4knB4wNJD7ruM0iF9nhCSQH7TBHzSA+64zRzEYPnAUkPrNsBSQn7SNHrQf/BTInYSIneQYH5/n8AAH5wTAnCSIlVyEiDZcAADyhFwOkjAQAATInYSCn4TIn2SBneSTH7STHeD1fATQneD4QFAQAASInxSMHpM3W7TA+9xkGD8D9ID73Ig/E/g8lASIX2QQ9FyIPB9EgPpcZI0+BFMcD2wUBID0XwSQ9FwEEpyUWFyQ+OiQAAAGr/QViJwYPhB0gPrPADTCHASMHuA0m4////////AABMIcZJweEwRTHASIP5BUEPk8BJCfFJCdFJAcBJg9EAMcBIg/kED5TARCHAD7bATAHASIlFoEmD0QBMiU2oDyhFoOtdTYnKTTHCTQnadUdMMdlIMcZID7r+P0gJznUHDygNzXMAAA8owes2sQREKMlID63wSNPuRTHA9sFASA9FxkwPRMZIiUWwSQnQTIlFuA8oRbDrC0mJ0k0xwkkJynUUSIHEiAAAAFtfXkFcQV1BXkFfXcNNidpNCcp0EUmJykkJ0g8owQ+Fsvz//+vTSAnKdc5MIdlIiU3QSCHGSIl12A8oRdDrulVIg+xASI1sJEAPKAEPKApIjVXwDykKSI1N4A8pAejz+///kEiDxEBdw1VIieVmD28BSIsCSItKCGYP2wVbcwAAZg9wyO5mSA9+ymZJD37ASA+68T9J99hJuAAAAAAAAP9/TYnBSRnRD5LCSPfYSRnID5LACNAPtsBdw1VWSIPsWEiNbCRQDygBDygKTI1F8EEPKQhIjVXgDykCSI110EiJ8ehaAAAAik4IgOEBMcCA+QFIGcBICwZIg8RYXl3DVVZIg+xYSI1sJFAPKAEPKApMjUXgQQ8pCEiNVdAPKQJIjXX4SInx6BYAAAD2RggBdAZIi0X46wNqAVhIg8RYXl3DVVZXU0iJ5UyLCkiLUghNixBNi0AISInWSA+69j9NicNJD7rzP0yJyEj32Ei4AAAAAAAA/39IicdIGfcPksNMiddI999MGdhIicgPksEI2YD5AXUJSI0NeH8AAOtWTInRTAnJSQnzSQnLdBlJhdB4HU050UiJ0UwZwX0dSI0NcX8AAOsvSI0NWH8AAOsmTTnKTInBSBnRfONNMdFMMcJMCcpIjRU7fwAASI0NVH8AAEgPRMoPEAEPEQBbX15dw1VWV0iD7EBIjWwkQEiJz4nR6AO1//8Pt8CJwcHpAoP5BA+HjQAAAEiNBeNxAABIYwyISAHB/+EPV8DpkwEAAA8QBw8pRfBqA1gxyTHSSA+kyiBEi0SF8EjB4SBMCcFIg8D/cunrOEiLD+hRAgAA6V8BAACLRwiJRfhIiwdIiUXwagJYMclIicpEi0SF8EjB4SBMCcFIg8D/cutIweog6DcBAADpKgEAAIsP6GsCAADpHgEAAEyNBDhJg8D8SPfZMdJqP0FZRTHSTDnRdBlHixyQRInOQQ+984P2H0gB8kn/ykWF23TiSI00xQAAAABIKdYxyUiD7nNID0LxifLB6gVBidBBweACSTnIdA6DPA8ASI1JBHTxsgHrE2r/QViJ8UHT4EH30ESFBJcPlcJIhcBqAVhID0T4SInwSMHoA0yNDAdIiwwHSItEBwdIiUX3SIlN8GoPWTHARTHASQ+kwAhED7ZUDe9IweAITAnQSP/JdelIuf////////8ASSHIifGA4QdMD63ASdPogPkGchhEjVYDQYDiB0UPtkkPsXNEKNFJ0+FNCcgPtspICchIuv///////wcATCHCSInB6BcAAABIjU3gDykBifLoXMr//5BIg8RAX15dw1VIieVIichICdF0TEgPvcqD8T9MD73AQYPwP0GAyEBIhdJFD7bIRA9FyUWJyEGA8H9BgPhxcyqxcEQowUgPpcJI0+BFMcn2wUBID0XQTA9EyEgPuvow62VmD+/A6YIAAABID7zKgMFATA+80EQPttlFD0XasQ5EKMlBicpBgOJ/RTHJRTjTQQ+UwUgPrdBI0+pFMdL2wUBID0XCTA9E0kkPuvoxSIPAAUmD0gBMD6zQAUnR6kn30UkhwUyJ0kEPtsBIweAwSLkAAAAAAAD/P0gBwUgB0WZID27JZkkPbsFmD2zBXcNVSInlSIXJdExIichID73RsXAo0UUxwEkPpcBFMclI0+D2wUBMD0XASQ9FwUkPuvgwSMHiMEi5AAAAAAAA/z9IAdFMAcFmSA9uyWZID27AZg9swesEZg/vwF3DVUiJ5YXJdE0PvdGwcCjQQYnIRTHJicFND6XBSdPgMcCxQITJTQ9FyEwPRcBJD7r5MEjB4jBIuAAAAAAAAP8/SAHQTAHIZkgPbshmSQ9uwGYPbMHrBGYP78Bdw1VWV1NIgezIAAAASI2sJIAAAABIidNIic5EicHog7H//w+3wInBwekC2e6D+QQPh84AAABIjQV9bgAASGMMiEgBwf/h3diLA0iJRSjfbSjpwQEAAN3YDxADDylFMGoDWTHARTHATA+kwCCLVI0wScHgIEkJ0EiDwf9y6kiNVaBMiQJIiUIISI1N0OiXAQAA223Q6X4BAADd2EiLA0iJRSAxyUiFwA+Ywd9tIEiNBf5tAADYBIjpWwEAAN3Yi0MIiUU4SIsDSIlFMGoCWTHASYnAi1SNMEjB4CBICdBIg8H/cuxJweggSI1VsEiJAkyJQghIjU3g6CwBAADbbeDpEwEAAN3YTI0EGEmDwPxI99kx0mo/QVlFMdJMOdF0GUeLHJBEic9BD737g/cfSAH6Sf/KRYXbdOJIjTzFAAAAAEgp1zHJSIPvQkgPQvmJ+sHqBUGJ0EHB4AJJOch0DoM8CwBIjUkEdPGyAesTav9BWIn5QdPgQffQRIUEkw+VwkiFwGoBWEgPRNhIifhIwegDTI0MA4pMAwiITThIiwQDSIlFMGoJWTHASYnARA+2VA0vSMHgCEwJ0Ej/yXXrScHoOIn5gOEHTA+twEnT6In599H2wQd1C0EPtkkJSAHJSQnID7bKSAnIQYPgA0iNVcBIiQJMiUIISInp6CoAAADbbQDbfRBIjU3wSI1VEEGJ+Og1u///223w2z5IifBIgcTIAAAAW19eXcNVVkiJ5UiJyEyLAkiLUghMicFICdF0RkwPvcpBg/E/SQ+9yIPxP4DJQEiF0g+2yUEPRclBiclBgPF/QYD5QHMkRInJgPE/TA+lwknT4EUx0vbBQEkPRdBND0TQ611FMdIxyetpTA+80kGAwkBND7zYQQ+28kEPRfOA8T9BictBgON/RTHSRDjeQQ+UwkkPrdBI0+pFMdv2wUBMD0XCTA9E2kmDwAFJg9MAQQ+3000PpMM/0epJ99JNIdpBD7bJSAHRSIHB/z8AAEkPuuo/TIkQZolICF5dw1VWV0iD7FBIjWwkUEiJzonR6JGu//8Pt8CJwcHpAoP5BA+HugAAAEiNBc1rAABIYwyISAHB/+FmD1fA6ZkAAABmDxAGZg8pRfBqA1kxwDHSSA+k0CBEi0SN8EjB4iBMCcJIg8H/culIjU3QSIkRSIlBCOtX8g8QDg8UDVxrAABmD1wNZGsAAGYPKMFmDxXB8g9YwetEi0YIiUX4SIsGSIlF8GoCWTHASInCRItEjfBIweAgTAnASIPB/3LrSMHqIEiNTeBIiQFIiVEI6BsBAADrB4sG8kgPKsBIg8RQX15dw0iNFDBIg8L8SPfZRTHAaj9BWUUx0kw50XQZRosckkSJz0EPvfuD9x9JAfhJ/8pFhdt04kiNFMUAAAAATCnCMclIg+o3SA9C0UGJ0EHB6AVFicFBweECSTnJdA+DPA4ASI1JBHTxQbAB6xRq/0FZidFB0+FB99FGhQyGQQ+VwEiFwGoBWEgPRPBIidBIwegDTI0MBosMBotEBgOJRfOJTfBqB1kxwEQPtlQN70jB4AhMCdBI/8l17ki5/////////wBIIciJ0YDhB0jT6ID5AnIUjUr/gOEHRQ+2SQeA8TdJ0+FMCchBD7bISAnBSLj///////9/AEghyPJIDyrASIPEUF9eXelwuv//VUiJ5UiLAUiLUQhIicFICdF0OkgPvcqD8T9MD73AQYPwP0GAyEBIhdJFD7bIRA9FyUWJyEGA8H9BgPg1cxWxNEQowUjT4EgPuvg061FmD+/A62hID7zKgMFATA+80EQPttlFD0XasUpEKMlBiclBgOF/RTHSRTjLQQ+UwkgPrdBI0+r2wUBID0TQSA+6+jVI/8JI0epJ99JJIdJMidBBD7bISMHhNEi6AAAAAAAA8D9IAcpIAcJmSA9uwl3DVVZXSIPsUEiNbCRQSInOidHo6av//w+3wInBwekCg/kED4e1AAAASI0FOWkAAEhjDIhIAcH/4Q9XwOmVAAAADxAGDylF8GoDWTHAMdJID6TQIESLRI3wSMHiIEwJwkiDwf9y6UiNTdBIiRFIiUEI61VIiwZIhcB5VkiJwUjR6YPgAUgJyPNIDyrA8w9YwOtEi0YIiUX4SIsGSIlF8GoCWTHASInCRItEjfBIweAgTAnASIPB/3LrSMHqIEiNTeBIiQFIiVEI6PQAAADrB4sG80gPKsBIg8RQX15dw0iNFDBIg8L8SPfZRTHAaj9BWUUx0kw50XQZRosckkSJz0EPvfuD9x9JAfhJ/8pFhdt04kiNFMUAAAAATCnCMclIg+oaSA9C0UGJ0EHB6AVFicFBweECSTnJdA+DPA4ASI1JBHTxQbAB6xRq/0FZidFB0+FB99FGhQyGQQ+VwEiFwGoBWEgPRPBJidFJwekDQosEDolF8DHAagRZRA+2VA3vweAIRAnQSP/Jde+J0YDhB9PoidH30fbBB3ULQg+2TA4EweEZCchBD7bICcGB4f///wPzDyrBSIPEUF9eXemH4v//VUiJ5UiLAUyLQQhIicFMCcF0NUkPvciD8T9ID73Qg/I/gMpATYXAD7bSD0XRQYnRQYDxf0GA+Rd3FLEXRCjJ0+A1AACAAOtSZg/vwOtcSQ+8yIDBQEwPvMhED7bRRQ9F0bFnKNFBiclBgOF/RTHbRTjKQQ+Uw0wPrcBJ0+j2wUBMD0TAQYHwAAAAAUH/wEHR6EH300Uhw0SJ2LH+KNEPtsnB4RcBwWYPbsFdw1VWV0iD7FBIjWwkUEiJzonR6H6p//8Pt8CJwcHpAoP5BA+HuwAAAEiNBeJmAABIYwyISAHB/+EPV8DpmwAAAA8QBg8pRfBqA1kxwDHSSA+k0CBEi0SN8EjB4iBMCcJIg8H/culIjU3QSIkRSIlBCOtVSIsGSIXAeVZIicFI0emD4AFICcjzSA8qwPMPWMDrRItGCIlF+EiLBkiJRfBqAlkxwEiJwkSLRI3wSMHgIEwJwEiDwf9y60jB6iBIjU3gSIkBSIlRCOiJ/v//6weLBvNIDyrA6LssAACQSIPEUF9eXcNMjQQwSYPA/Ej32THSaj9BWUUx0kw50XQZR4sckESJz0EPvfuD9x9IAfpJ/8pFhdt04kiNPMUAAAAASCnXMclIg+8NSA9C+Yn6weoFQYnQQcHgAkk5yHQOgzwOAEiNSQR08bIB6xNq/0FYiflB0+BB99BEhQSWD5XCSIXAagFYSA9E8EmJ+EnB6ANCD7cEBkGJ+UHA4QVBwPkFifmA4QfT6EWEyXkcQYDBBUGA4QdGD7ZEBgKxDUQoyUHT4EEJwESJwA+2ygnIJf8fAADzDyrA6N0rAACJ+kiDxFBfXl3pxOX//1VWV0iD7HBIjWwkcEiJz4nR6Lmn//8Pt8CJwcHpAoP5BA+HogAAAEiNBTVlAABIYwyISAHB/+EPV8DpsQEAAA8QBw8pRfBqA1kxwDHSSA+k0CBEi0SN8EjB4iBMCcJIg8H/culIjU2wSIkR60JIiw/omgIAAOl2AQAAi0cIiUX4SIsHSIlF8GoCWTHASInCRItEjfBIweAgTAnASIPB/3LrSMHqIEiNTcBIiQFIY8JIiUEI6EABAADpMwEAAIsP6L4CAADpJwEAAItUj/xMjUH/wfofMclqP0FZSYP4/3QfRosUh0WJ00Ex00SJzkEPvfOD9h9IAfFJ/8hBMdJ020iNNMUBAAAASCnOMclIg+50SA9C8UiJ8kjB6gVMjQSVAAAAAEk5yHQOgzwPAEiNSQR08bIB6xNq/0FYifFB0+BB99BEhQSXD5XCSIXAagFYSA9E+EiJ8EjB6ANMjQwHSIsMB0iLRAcHSIlF90iJTfBqD1kxwEUxwEkPpMAIRA+2VA3vSMHgCEwJ0Ej/yXXpSLn/////////AEkhyInxgOEHTA+twEnT6ID5BXIXQYnyQYDiA0UPtkkPsXREKNFJ0+FNCcgPtspICchJweAMScH4DEiNTeBMiUEISIkB6BcAAABIjU3QDykBifLo9Lz//5BIg8RwX15dw1VWSInlTIsRSItJCEyJ0EgJyHRzSInISMH4P0iJykgxwk2J0EkxwEkpwEgZwki4AAAAAAAAAIBIIchMD73KQYPxP00PvdhBg/M/QYDLQEiF0kUPtttFD0XZRYnZQYDxf0GA+XFzKrFwRCjJTA+lwknT4EUx0vbBQEkPRdBND0TQSA+6+jDrZGYP78DphAAAAEgPvMmAwUBND7zSD7bxQQ9F8rEORCjZQYnLQYDjf0Ux0kQ43kEPlMJJD63QSNPqRTHb9sFATA9FwkwPRNpJD7r7MUmDwAFJg9MATQ+s2AFJ0etJ99JNIcJMidpBD7bJSMHhMEm4AAAAAAAA/z9JAchJAdBJCcBmSQ9uyGZJD27CZg9swV5dw1VIieVIhcl0ZEiJyEj32EgPSMFIugAAAAAAAACASCHKTA+9wLFwRCjBRTHJSQ+lwUjT4EUx0vbBQEwPRchJD0XCSQ+6+TBJweAwSLkAAAAAAAD/P0wBwUwByUgJ0WZID27JZkgPbsBmD2zB6wRmD+/AXcNVSInlhcl0YInI99gPSMEx0oXJD5jCSMHiP0QPvcCxcEQowUUxyUUx0kkPpcJI0+CxQITJTA9F0EkPRcFJD7r6MEnB4DBIuQAAAAAAAP8/TAHBTAHRSAnRZkgPbslmSA9uwGYPbMHrBGYP78Bdw1VWV1NIgezIAAAASI2sJIAAAABIidNIic5EicHovqP//w+30InQwegC2e6D+AQPh74AAABIjQ1MYQAASGMEgUgByP/g3diLA4lFLNtFLOneAQAA3dgPEAMPKUUwagNZMcBFMcBMD6TAIItUjTBJweAgSQnQSIPB/3LqSI1VoEyJAkiJQghIjU3Q6LQBAADbbdDpmwEAAN3YSIsDSIlFIN9tIOmKAQAA3diLQwiJRThIiwNIiUUwagJZMcBJicCLVI0wSMHgIEgJ0EiDwf9y7EnB6CBIjVWwSIkCSWPASIlCCEiNTeDoWAEAANtt4Ok/AQAA3diLTIP8TI1A/8H5HzHAaj9BWUmD+P90H0aLFINFidNBMctEic9BD737g/cfSAH4Sf/IQTHKdNtIjTzVAQAAAEgpxzHJSIPvQ0gPQvlIifhIwegFTI0EhQAAAABJOch0DoM8CwBIjUkEdPGwAesTav9BWIn5QdPgQffQRIUEgw+VwEiF0moBWUgPRNlIiflIwekDTI0MC4pUCwiIVThIiwwLSIlNMGoJWTHSSYnQRA+2VA0vSMHiCEwJ0kj/yXXrScHoOIn5gOEHTA+twknT6ID5BnIwRI1XA0GA4gdFD7ZJCbFDRCjRRTHSTQ+lyknT4UUx2/bBQE0PRdFND0XLTQnQTAnKD7bASAnQScHgPUnB+D1IjVXATIlCCEiJAkiJ6egqAAAA220A230QSI1N8EiNVRBBifjoVK3//9tt8Ns+SInwSIHEyAAAAFtfXl3DVVZTSInlSInITIsaSItyCEyJ2UgJ8XRfSInySMH6P0mJ8Ekx0E2J2Ukx0Ukp0UkZ0E0PvdBBg/I/SQ+9yYPxP4DJQE2FwA+2yUEPRcpBicpBgPJ/QYD6QHMkRInRgPE/TQ+lyEnT4UUx2/bBQE0PRcFND0TZ61tFMdsx0utxSA+89kCAxkBND7zbQA+29kEPRfOA8T+Jy4Djf0Ux20A43kEPlMNND63BSdPoMfb2wUBND0XISQ9E8EmDwQFIg9YARA+3xkwPpM4/QdHoSffTSSHzQQ+2ykwBwUiBwf8/AABIgeIAgP//SAnKSQ+66z9MiRhmiVAIW15dw1VWV0iD7FBIjWwkUEiJzonR6I2g//8Pt8CJwcHpAoP5BA+HmQAAAEiNBTFeAABIYwyISAHB/+FmD1fA63tmDxAGZg8pRfBqA1kxwDHSSA+k0CBEi0SN8EjB4iBMCcJIg8H/culIjU3QSIkR6zzySA8qButEi0YIiUX4SIsGSIlF8GoCWTHASInCRItEjfBIweAgTAnASIPB/3LrSMHqIEiNTeBIiQFIY8JIiUEI6BcBAADrBPIPKgZIg8RQX15dw4tUjvxMjUH/wfofMclqP0FZSYP4/3QfRosUhkWJ00Ex00SJz0EPvfuD9x9IAflJ/8hBMdJ020iNFMUBAAAASCnKMclIg+o4SA9C0UmJ0EnB6AVOjQyFAAAAAEk5yXQPgzwOAEiNSQR08UGwAesUav9BWYnRQdPhQffRRoUMhkEPlcBIhcBqAVhID0TwSInRSMHpA0iNBA5EiwwOi0wOA4lN80SJTfBqB1lFMclED7ZUDe9JweEITQnRSP/Jde5Iuf////////8ASSHJidGA4QdJ0+n2wgd0EUQPtlAHsDgoyInBSdPiTQnRQQ+2wEwJyEjB4AhIwfgI8kgPKsBIg8RQX15d6Y6s//9VVkiJ5UyLEUiLSQhMidBICch0YUiJyEjB+D9JichJMcBMidJIMcJIKcJJGcBIuAAAAAAAAACASCHITQ+9yEGD8T9MD73aQYPzP0GAy0BNhcBFD7bbRQ9F2UWJ2UGA8X9BgPk1cxWxNEQoyUjT4kgPuvo061BmD+/A62pID7zJgMFATQ+80g+28UEPRfKxSkQo2UGJykGA4n9FMdtEONZBD5TDTA+twknT6PbBQEwPRMJJD7r4NUn/wEnR6En3000hw0yJ2kEPtslIweE0SbgAAAAAAADwP0kByEkB0EkJwGZJD27AXl3DVVZXSIPsUEiNbCRQSInOidHo3J3//w+3wInBwekCg/kED4eWAAAASI0FlFsAAEhjDIhIAcH/4Q9XwOt5DxAGDylF8GoDWTHAMdJID6TQIESLRI3wSMHiIEwJwkiDwf9y6UiNTdBIiRHrPPNIDyoG60SLRgiJRfhIiwZIiUXwagJZMcBIicJEi0SN8EjB4CBMCcBIg8H/cutIweogSI1N4EiJAUhjwkiJQQjo/wAAAOsE8w8qBkiDxFBfXl3Di1SO/EyNQf/B+h8xyWo/QVlJg/j/dB9GixSGRYnTQTHTRInPQQ+9+4P3H0gB+Un/yEEx0nTbSI0UxQEAAABIKcoxyUiD6htID0LRSYnQScHoBU6NDIUAAAAASTnJdA+DPA4ASI1JBHTxQbAB6xRq/0FZidFB0+FB99FGhQyGQQ+VwEiFwGoBWEgPRPBJidFJwekDQosEDolF8DHAagRZRA+2VA3vweAIRAnQSP/Jde+J0YDhB9PogPkGchlEjVIDQYDiB0YPtkwOBLEbRCjRQdPhRAnIQQ+2yAnBweEFwfkF8w8qwUiDxFBfXl3pi9T//1VWSInlTIsRSItJCEyJ0EgJyHReSInISMH4P0mJyEkxwEyJ0kgxwkgpwkkZwEiJyEjB6D/B4B9ND73YQYPzP0wPvcpBg/E/QYDJQE2FwEUPtslFD0XLRYnLQYDzf0GA+xd3FbEXRCjZ0+KB8gAAgADrUGYP78DrXUgPvMmAwUBND7zSRA+22UUPRdqxZ0QoyUGJykGA4n8x9kU400APlMZMD63CSdPo9sFATA9EwkGB8AAAAAFB/8BB0ej31kQhxonysf5EKMkPtsnB4RcB0QnBZg9uwV5dw1VWV0iD7FBIjWwkUEiJzonR6Fab//8Pt8CJwcHpAoP5BA+HnAAAAEiNBSJZAABIYwyISAHB/+EPV8Drfw8QBg8pRfBqA1kxwDHSSA+k0CBEi0SN8EjB4iBMCcJIg8H/culIjU3QSIkR6zzzSA8qButEi0YIiUX4SIsGSIlF8GoCWTHASInCRItEjfBIweAgTAnASIPB/3LrSMHqIEiNTeBIiQFIY8JIiUEI6Hn+///rBPMPKgbosh4AAJBIg8RQX15dw4tUjvxMjUH/wfofMclqP0FZSYP4/3QfRosUhkWJ00Ex00SJz0EPvfuD9x9IAflJ/8hBMdJ020iNPMUBAAAASCnPMclIg+8OSA9C+UiJ+kjB6gVMjQSVAAAAAEk5yHQOgzwOAEiNSQR08bIB6xNq/0FYiflB0+BB99BEhQSWD5XCSIXAagFYSA9E8EmJ+EnB6ANCD7cEBon5gOEH0+iA+QNyHESNTwZBgOEHRg+2RAYCsQ5EKMlB0+BBCcBEicAPtsoJyMHgApjB+ALzDyrA6NYdAACJ+kiDxFBfXl3pvdf//1VBVlZXU0iB7NAAAABIjawkgAAAAA8pdUBIic5mQQ9vMInR6KCZ//9ED7fwRInwwegCg/gED4e0AAAASI0NflcAAEhjBIFIAcj/4EiNTdBmD38x6NsCAACJBumfAQAASI1NoGYPfzHopAEAAGZID37AZg9wwO5mSA9+wkyNRRAxyUmJwUkPrdFJidJJ0+r2wUBND0TRRYkQSIPBIEmDwARIgfmAAAAAddhmD29FEPMPfwbpRwEAAEiNTcBmD38x6AACAABIiQbpMgEAAEiNTbBmD38x6DcBAABmD3DI7mZID37IZg/WBolGCOkPAQAASI1V4GYPfzJIjX0QSIn56LnO//+LRxCD+HJqcV8PTfiBx4///3+J+4Hj////f4P4cnwZZg9vRRBIjU3wZg9/AWpxWuilr///Zg9v8DHASTnGdAqDJAYASIPABOvxSInpZg9/Mei4AAAAZkgPfsBmD3DA7mZJD37ATYX2agFZSA9E8YnaweoDQIDnB0Gx/4n5QdLhQfbRRCIMFkkPpcBI0+BIAfJFD7bJ99P2wwd0F0Gy/on5QdLiRCJSDkEPtspIweEwSQnITAnITI1NMTHJSbr/////////AE0hwkmJwE0PrdBNidNJ0+v2wUBND0TYRYgZSIPBCEn/wUiD+Xh13EiLRTFIi004SIlKB0iJAg8odUBIgcTQAAAAW19eQV5dw1VIieVIichIi1EISIXSQQ+YwkiJ0UjB6TBBiclBgeH/fwAAQYH5/z8AAEEPksNFMcBFCNNBugAAAAB1aEWNmYG///9q/0FYTYnCQYP7gHJUTIsASLj///////8AAEghwkgPuuowQYH5bkAAAHccsG8oyInBSQ+t0EjT6kUx0qhATA9FwkwPRNLrGoDBEUwPpcJJ0+AxwPbBQEkPRdBMD0XASYnSZkkPbsBmSQ9uymYPbMFdw1VIieVIi0EISIXAQQ+YwUiJwkjB6jBBidBBgeD/fwAAQYH4/z8AAEEPksJFCMp0BDHA6zlBgcDBv///QYP4wHMFav9Y6ydMiwFIuf///////wAASCHISA+66DCxbyjRSQ+twEjT6PbBQEkPRMBdw1VIieVIi1EISIXSQQ+YwkmJ0EnB6DBFicFBgeH/fwAAQYH5/z8AAEEPksMxwEUI03U8QYHB4b///0GD+eBzBWr/WOsqSIsBSLn///////8AAEghykgPuuowsW9EKMFID63QSNPq9sFASA9E0InQXcNVQVZWV1NIgezQAAAASI2sJIAAAABIic5B2yjbfTiJ0egAlv//RA+38ESJ8MHoAoP4BA+H9wAAAEiNDfZTAABIYwSBSAHI/+DZfUwPt0VMDQAMAABmiUVG2W1G2204330o2W1Mi0UoiQbp0AEAANttONt90EiNTdDozwEAAGZID37AZg9wwO5mSA9+wkyNRaAxyUmJwUkPrdFJidJJ0+r2wUBND0TRRYkQSIPBIEmDwARIgfmAAAAAddhmD29FoPMPfwbpdgEAANkFY1MAADHA22042+kPk8DZ7tvC3dre4dl9Sg+3TUqByQAMAABmiU1E2W1E330g2W1KSMHgP0gzRSBIiQbpNAEAANttONt94EiNTeDoMwEAAGYPcMjuZkgPfshmD9YGiUYI6Q8BAADbbTjbffBIjX2gSI1V8EiJ+eiYAQAAi0cQg/hBakBbD03YjbvA//9/gef///9/g/hBfBzbbaDbfQBIjU3ASInqakBBWOhQoP//223A2304McBJOcZ0CoMkBgBIg8AE6/HZBZxSAAAx0tttONvpD5PC2e7bwt3a3uHZfU4Pt0VODQAMAABmiUVI2W1I330w2W1OSMHiP0gzVTBNhfZqAVhID0TwifjB6AOA4wdBsf+J2UHS4Q+2DAZFichB9tBFD7bQQSHKg+cHSYnQiflJ0+BIhf90FED234n5SNPqRCJMBghECMqIVAYITQnQSI1VGDHJTYnBSdPpRIgKSIPBCEj/wkiD+UB16kiLTRhIiQwGSIHE0AAAAFtfXkFeXcNVSInlSA+/QQhIhcAPmMJBicFBgeH/fwAAQYH5/z8AAEEPksBBCNB0BzHSRTHA61FFjZGBv///av9aSYnQQYP6gHI+D7fASIsRQYH5PUAAAHcUsT4owUUxwEwPrcL2wUBJD0XQ6xsEQkUxwInBSQ+l0EUxyUjT4qhATA9FwkkPRdFmSA9uwmZJD27IZg9swV3DVUiJ5UiJyEyLAg+3UghFMcmJ0YHh/38AAHQsgfn/fwAAdEqJ0YHhAIAAAEiByf4/AACB4v9/AABBidFBgcECwP//SInK6yZNhcB0IUkPvchIg/E/SdPggeIAgAAASIHK/j8AAEG5A8D//0EpyUyJAGaJUAhEiUgQXcNVVldTSIPsWEiNbCRQDyl18GYPb/JIic6J0eivkv//D7fYidjB6AKD+AQPh7YAAABIjQ3DUAAASGMEgUgByP/g8kgPLMaJBumlAQAAZg9vxuipAQAAZkgPfsBmD3DA7mZID37CTI1F0DHJSYnBSQ+t0UmJ0knT6vbBQE0PRNFFiRBIg8EgSYPABEiB+YAAAAB12GYPb0XQ8w9/BulRAQAA8kgPLMZIicHyD1w1QlAAAPJIDyzWSMH5P0ghykgJwkiJFukqAQAAZg9vxuguAQAAZg9wyO5mSA9+yGYP1gaJRgjpCwEAAEiNfdBIiflmD2/O6MXI//+LRwiD+DZqNV8PTfh8EfIPEEXQajVa6HGf//9mDyjwgcfL//9/McBIOcN0CoMkBgBIg8AE6/HyTA8szkiF22oBWEgPRPCJ+MDgBcD4BYn5wekDgeH///8PSI0UDkQPtgQOQIDnB0Gy/4n5QdLiQfbSRQ+20kUhwk2Jy0nT40m4/////////wBNIdhNCdCEwHglPAN0P0QPtkoGDAQkB0Gy/onBQdLiQQ+2wkQhyEjB4DBJCcDrHgQFJAdEilIHicFB0upB0uKxNSjBSdPpRQjRRIhKB0iNRekxyU2JwUnT6USICEiDwQhI/8BIg/k4deqLRemLTeyJSgOJAg8odfBIg8RYW19eXcNVSInlZkgPfsBIhcBBD5jASInBSMHpNEGJyUGB4f8HAABBgfn/AwAAQQ+SwjHSRQjCQbgAAAAAdVdFjZGB+///av9aSYnQQYP6gHJESLr///////8PAEgh0EgBwkj/wkGB+TIEAAB3DrAzKMiJwUjT6kUxwOsagMFNRTHASQ+l0DHASNPi9sFATA9FwkgPRdBmSA9uwmZJD27IZg9swV3DVUFWVldTSIPsQEiNbCRADyl18GYPb/JIic6J0egPkP//D7fYidjB6AKD+AQPh7YAAABIjQ07TgAASGMEgUgByP/g80gPLMaJBulIAQAAZg9vxuhOAQAAZkgPfsBmD3DA7mZID37CTI1F4DHJSYnBSQ+t0UmJ0knT6vbBQE0PRNFFiRBIg8EgSYPABEiB+YAAAAB12GYPb0Xg8w9/Bun0AAAA80gPLMZIicHzD1w1vk0AAPNIDyzWSMH5P0ghykgJwkiJFunNAAAAZg9vxujTAAAAZg9wyO5mSA9+yGYP1gaJRgjprgAAAEiNfeBIiflmD2/O6DkBAACLRwSD+BlqGF8PTfhEjbfo//9/QYHm////f4P4GXwQ8w8QReBqGFroU8f//w8o8DHASDnDdAqDJAYASIPABOvx8w8sxkiF22oBWUgPRPFEifLB6gNEigQWQIDnB0Gx/4n5QdLhQfbGB3QasRhAKPlBicJB0+qKTBYDRCDJQQjKRIhUFgOJ+dPgQfbRRSDIicFECMGIDBbB6AhmiUQWAQ8odfBIg8RAW19eQV5dw1VIieVmD37ChdJBD5jAidHB6RdED7bJQYP5f0EPksIxwEUIwkG4AAAAAHVQav9YSYnAQYH5/wAAAHRBgeL//38AgcoAAIAAQYH5lQAAAHcQsBYoyInB0+pFMcBIidDrHInQgMFqRTHASQ+lwDHSSNPg9sFATA9FwEgPRcJmSA9uwGZJD27IZg9swV3DVUiJ5UiJyGYPfspBidBBwegXMclFhMB0IkUPtshBgfn/AAAAdFmB4v//f4CBygAAAD9BD7bIg8GC60T3wv//fwB0PInRweEJRA+9wUGD8B9BjUgBQYnRQYHhAAAAgNPigeL//38AMclBgPgWD0LKQY0UCYHCAAAAP2qCWUQpwYkQiUgEXcNVVldTSIPsSEiNbCRADyl18GYPb/JIic6J0ehajf//D7fYidjB6AKD+AQPh9IAAABIjQ2eSwAASGMEgUgByP/gZg9vxujBEwAA80gPLMCJBumIAQAAZg9vxuisEwAA6Iv+//9mSA9+wGYPcMDuZkgPfsJMjUXgMclJicFJD63RSYnSSdPq9sFATQ9E0UWJEEiDwSBJg8AESIH5gAAAAHXYZg9vReDzD38G6S8BAABmD2/G6FMTAADzSA8swEiJwfMPXAUKSwAA80gPLNBIwfk/SCHKSAnCSIkW6f8AAABmD2/G6CMTAADoAv7//2YPcMjuZkgPfshmD9YGiUYI6dsAAABIjX3gSIn5Zg9vzujYAAAAiweD+AxqC18PTfh8EmYPxEXkAGoLWuhByv//Zg9v8IHH9f//fzHASDnDdAqDJAYASIPABOvxZg9vxui5EgAA8w8swEQPt8hIhdtqAVhID0TwifrB6gOJ+YDhB7D/0uCB4v///w9ED7YUFvbQRYnIQdPgD7bARCHQQQnAgPkGciSNTwOA4QdEilQWAkHS6kHS4rALKMiJwUHT6UUI0USITBYC6yKA+QV0HQ+2RBYBjU8CgOEHQbH+QdLhQQ+2ySHBweEIQQnIZkSJBBYPKHXwSIPESFtfXl3DVUiJ5UiJyGYPxdEARA+3wkHB6AoxyUH2wB90JUWJwUGD4R9Bg/kfdGOB4v+D//+BygA4AABBD7fIg+Efg8Hy60tm98L/A3REidHB4QZmRA+9wUGD8A9BjUgBQYnRQYHhAID//4DhD9PigeL/AwAAMclBgPgJD0LKQY0UCYHCADgAAEUPt8Bq8llEKcGJCGaJUARmg2AGAF3DVUFXQVZBVFZXU0iB7NAAAABIjawkgAAAAA8pdUBIic5mQQ9vMInR6MqK//8Pt9hBid5Bwe4CQYP+BA+HtAAAAEiNBR9JAABKYwywSAHB/+FIjU3QZg9/Meh0AwAAiQbpAwIAAEiNTaBmD38x6AwCAABmSA9+wGYPcMDuZkgPfsJMjUUQMclJicFJD63RSYnSSdPq9sFATQ9E0UWJEEiDwSBJg8AESIH5gAAAAHXYZg9vRRDzD38G6asBAABIjU3AZg9/MeiIAgAASIkG6ZYBAABIjU2wZg9/MeifAQAAZg9wyO5mSA9+yGYP1gaJRgjpcwEAAEiNVeBmD38ySI19EEiJ+ejiv///i0cQjQzdAAAAADHSOcEPlMKDwnEp0DH/hcAPT/h+FmYPb0UQSI1N8GYPfwHo0aD//2YPb/BBifxBwewFRYnnQcHnAjHASTnHdAqDJAYASIPABOvxSInpZg9/MegVAQAAZg9wyO5mSQ9+yEyJwkjB+jFBidGJ+UHT4WZID37ARokMpkmDxwRCjQy1AAAAAEw5+XQKQokUPkmDxwTr8UiF22oBWUgPRPGJ+on5gOEHQbL/QdLiweoDQfbSRCIUFkm5////////AwBNIcFJD6XBSNPgSAHyRQ+20oD5B3QnifmD4QeD+QZ0Lo1PAYDhB0Gw/kHS4EQiQg5BD7bISMHhMEkJyesRikoPgOH+ScHoP0EIyESIQg9MCdBMjUUxMclJuv////////8ATSHKSYnBTQ+t0U2J00nT6/bBQE0PRNlFiBhIg8EISf/ASIP5eHXcSItFMUiLTThIiUoHSIkCDyh1QEiBxNAAAABbX15BXEFeQV9dw1VIieVIichIi1EISInRSMHpMEGJy0GB4/9/AABFMclBugAAAABBgfv/PwAAD4KSAAAARY2Dgr///0GD+IB3G0jB6j9Ig8L/Sbr/////////f0mD0gBJidHrakyLAEm5////////AABJIdFJD7rpMEGB+29AAABzG7BvKMiJwU0PrchJ0+kxyahATQ9FwUkPRMnrGoDBEU0PpcFJ0+AxwPbBQE0PRchMD0XATInJRTHSTYnBSffZSRnKSIXSTA9J0U0PSchmSQ9uwWZJD27KZg9swV3DVUiJ5UiLUQhIidBIwegwQYnAQYHg/38AAEGB+P8/AABzBDHA61hBgcDCv///QYP4wHcXSLn/////////f0iNQQFIhdJID0nB6zRMiwFJuf///////wAASSHRSQ+66TCxbyjBTQ+tyEnT6fbBQE0PRMhMichI99hIhdJJD0nBXcNVSInlSItRCEmJ0EnB6DBFicFBgeH/fwAAMcBBgfn/PwAAclBBgcHiv///QYP54HcPMcBIhdIPmMAF////f+s0SIsBSbn///////8AAEkh0UkPuukwsW9EKMFMD63ISdPp9sFATA9EyESJyPfYSIXSQQ9JwV3DVUFXQVZBVFZXU0iB7NAAAABIjawkgAAAAEiJzkHbKNt9PInR6IaG//8Pt9hBid5Bwe4CQYP+BA+H3QAAAEiNBe9EAABKYwywSAHB/+HZfU4Pt0VODQAMAABmiUVK2W1K220821042W1Oi0U4iQbp5wEAANttPNt90EiNTdDo6gEAAGZID37AZg9wwO5mSA9+wkyNRaAxyUmJwUkPrdFJidJJ0+r2wUBND0TRRYkQSIPBIEmDwARIgfmAAAAAddhmD29FoPMPfwbpjQEAANl9TA+3RUwNAAwAAGaJRUjZbUjbbTzffSDZbUxIi0UgSIkG6WUBAADbbTzbfeBIjU3g6GgBAABmD3DI7mZID37IZg/WBolGCOlAAQAA2208233wSI19oEiNVfBIifnoN/L//4tHEI0M3QAAAABFMcA5wUEPlMBBg8hARCnAMf+FwA9P+H4Y222g230ASI1NwEiJ6ujtkP//223A2308QYn8QcHsBUWJ50HB5wIxwEk5x3QKgyQGAEiDwATr8dttPNt9EEiNTRDo0wAAAGYPcMjuZkgPfspBidCJ+UHT4GZID37ARokEpkmDxwRCjQy1AAAAAEw5+XQKQokUPkmDxwTr8UiF22oBWUgPRPFBifhBwegDifmA4QdBsf9B0uFB9tFGIgwGg+IBSA+lwkjT4EkB8EUPtsn310D2xwd0EUGy/kHS4kUiUAhBD7bKSAnKTAnITI1NLzHJD7bSSYnCSQ+t0kmJ00nT6/bBQE0PRNpFiBlIg8EISf/BSIP5SHXcikU3QYhACEiLRS9JiQBIgcTQAAAAW19eQVxBXkFfXcNVSInlSA+/UQiJ0CX/fwAAPf8/AABzBjHAMcnrekSNgIK///9Bg/iAdxsxwEiF0g+ZwEj32Ei5AAAAAAAAAIBIg9kA61JMiwEPt8o9PkAAAHMVsD4oyEUxyYnBTQ+tyKhATQ9FwesagMFCRTHJTQ+lwTHASdPg9sFATQ9FyEwPRcAxyUyJwEj32EwZyUiF0kkPSclJD0nAZkgPbsBmSA9uyWYPbMFdw1VBVlZXU0iD7FBIjWwkUA8pdfBmD2/ySInOidHoe4P//w+32EGJ3kHB7gJBg/4ED4ebAAAASI0F+EEAAEpjDLBIAcH/4fIPLMaJBunHAQAAZg9vxujNAQAAZkgPfsBmD3DA7mZID37CTI1F0DHJSYnBSQ+t0UmJ0knT6vbBQE0PRNFFiRBIg8EgSYPABEiB+YAAAAB12GYPb0XQ8w9/BulzAQAA8kgPLMZIiQbpZgEAAGYPb8bobAEAAGYPcMjuZkgPfshmD9YGiUYI6UcBAABIjX3QSIn5Zg9vzuipuf//i0cIjQzdAAAAADHSOcEPlMKDwjUp0DH/hcAPT/h+DvIPEEXQ6EeQ//9mDyjwifrB6gWJ0MHgAjHJSDnIdAqDJA4ASIPBBOvx8kwPLMZNicFJwfk1RYnKiflB0+JEiRSWSIPABEKNDLUAAAAASDnBdApEiQwGSIPABOvxSIXbagFYSA9E8In4wegDifmA4QdBsf9B0uFIjRQGD7YEBkH20UUPttFBIcJIuP///////z8ASSHATInASNPgSbn/////////AEkhwU0J0YD5AnYijU8GgOEHRIpSB0HS6kHS4rA2KMiJwUnT6EUI0ESIQgfrH3QdD7ZCBo1PBYDhB0Gw/kHS4EEPtsghwUjB4TBJCclIjUXpMclNichJ0+hEiABIg8EISP/ASIP5OHXqi0Xpi03siUoDiQIPKHXwSIPEUFtfXkFeXcNVSInlZkgPfsJIidFIwek0QYnJQYHh/wcAADHAQboAAAAAQYH5/wMAAA+ChQAAAEGNgYL7//+D+IB3GzHASIXSD5nASPfYSboAAAAAAAAAgEmD2gDrXki4////////DwBJidBJIcBJAcBJ/8BBgfkzBAAAcw6wMyjIicFJ0+hFMcnrGoDBTUUxyU0PpcExwEnT4PbBQE0PRchMD0XARTHSTInASPfYTRnKSIXSSQ9JwE0PSdFmSA9uwGZJD27KZg9swV3DVUFWVldTSIPsUEiNbCRQDyl18GYPb/JIic6J0eiRgP//D7fYQYneQcHuAkGD/gQPh5sAAABIjQUiPwAASmMMsEgBwf/h8w8sxokG6YEBAABmD2/G6IcBAABmSA9+wGYPcMDuZkgPfsJMjUXQMclJicFJD63RSYnSSdPq9sFATQ9E0UWJEEiDwSBJg8AESIH5gAAAAHXYZg9vRdDzD38G6S0BAADzSA8sxkiJBukgAQAAZg9vxugmAQAAZg9wyO5mSA9+yGYP1gaJRgjpAQEAAEiNfdBIiflmD2/O6NPx//+LRwSNDN0AAAAAMdI5wQ+UwoPKGCnQMf+FwA9P+H4N8w8QRdDo8Lf//w8o8EGJ+EHB6AVEicLB4gIxwEg5wnQKgyQGAEiDwATr8fMPLMZBicFBwfkYRYnKiflB0+JGiRSGSIPCBEKNDLUAAAAASDnRdApEiQwWSIPCBOvxSIXbagFZSA9E8Yn6weoDifmA4QdBsP9B0uBED7YMFkH20EUPtsAl////AdPgRSHIRAnA99dA9scHdBhED7ZEFgNBsf5B0uFBD7bJRCHBweEYCchMjUXsMclBicFB0+lFiAhIg8EISf/ASIP5IHXqi0XsiQQWDyh18EiDxFBbX15BXl3DVUiJ5WYPfsKJ0cHpF0QPtskxwEG6AAAAAEGD+X8PgoEAAABBjYEC////g/iAdxoxwIXSD5nASPfYSboAAAAAAAAAgEmD2gDrW0GJ0EGB4P//fwBBgcgAAIAAQYH5lgAAAHMOsBYoyInBQdPoRTHJ6x1FicCAwWpFMclND6XBMcBJ0+D2wUBND0XITA9FwEUx0kyJwEj32E0ZyoXSSQ9JwE0PSdFmSA9uwGZJD27KZg9swV3DVUFXQVZBVFZXU0iD7EBIjWwkQA8pdfBmD2/ySInOidHo+X3//w+32EGJ3kHB7gJBg/4ED4e3AAAASI0FnjwAAEpjDLBIAcH/4WYPb8boXQQAAPMPLMCJBumuAQAAZg9vxuhJBAAA6OH+//9mSA9+wGYPcMDuZkgPfsJMjUXgMclJicFJD63RSYnSSdPq9sFATQ9E0UWJEEiDwSBJg8AESIH5gAAAAHXYZg9vReDzD38G6VUBAABmD2/G6PADAADzSA8swEiJBuk/AQAAZg9vxujaAwAA6HL+//9mD3DI7mZID37IZg/WBolGCOkbAQAASI194EiJ+WYPb87oj/H//4sHjQzdAAAAADHSOcEPlMKDwgsp0DH/hcAPT/h+D2YPxEXkAOjquv//Zg9v8EGJ/EHB7AVFiedBwecCMcBJOcd0CoMkBgBIg8AE6/FmD2/G6FoDAADzDyzAmInCwfoLQYnQiflB0+BGiQSmSYPHBEKNDLUAAAAATDn5dApCiRQ+SYPHBOvxSIXbagFZSA9E8Yn6weoDifmA4QdBsf9B0uFED7YUFkH20SX/DwAAQYnAQdPgRQ+2yUUh0UUJyID5BXIhRIpMFgJAgOcDiflB0ulB0uGxDEAo+dPoRAjIiEQWAusjQPbHBHUdD7ZEFgGNTwOA4QdBsf5B0uFBD7bJIcHB4QhBCchmRIkEFg8odfBIg8RAW19eQVxBXkFfXcNVSInlZg9+wonRgeH///9/jYEAAIDHRI2BAACAuEQ5wHMrQYnIQcHoDUGNgABAAACB4f8fAACB+QAQAAB2LUGBwAFAAABEicDppgAAAIH5AACAf3YlwekNgeH/AQAAgckAfgAAicjpiAAAAA+FggAAAEGD4AFEAcDreWa4AHyB+f//f0d3bcHpF2pxWCnIg/gXdgQxwOtcQYnQQYHg//9/AEGByAAAgACAwQ9FicFB0+FFMdJFhclBD5XCicFB0+hEicDB6A1BgeD/HwAARQnQQYH4ARAAAHIHD7fA/8DrE0GB+AAQAAB1Cg+3yInIg+ABAcjB6hCB4gCAAAAJ0GYPxMAAXcNVVldIieVMiwlIi1EISInRSA+68T9IuAAAAAAAAP/DSAHISbgAAAAAAAABvEkByEw5wHM7SLgAAAAAAAAAQEwPpMkETI0EAUm6/////////w9NIcpJuQAAAAAAAAAITTnKdkVMjQQISf/A6QQBAABMichI99hIuAAAAAAAAP9/SBnIczVMD6TJBEi4////////BwBIIchJuAAAAAAAAPh/SQnA6csAAAAPhcUAAACD4QFJAcjpugAAAEjB6TCB+f5DAAB2D0m4AAAAAAAA8H/pnwAAALgBPAAAKciD+HB2CEUxwOmLAAAASbj///////8AAEkh0EkPuugw/slNicJND6XKTYnLSdPjMfb2wUBND0XTTA9F3jH/TQnTQA+Vx4nBTQ+twUnT6KhATQ9FyEwPRcZND6TIBEi4/////////w9MIchICfhIuQEAAAAAAAAISDnIcgVJ/8DrGEi5AAAAAAAAAAhIOch1CUSJwIPgAUkBwEi4AAAAAAAAAIBIIcJMCcJmSA9uwl9eXcNVSInlZg/FwACJwoHi/38AAInRgcIA/P//ZoH6/3d3Dg+3ycHhDYHBAAAAOOtJZoH5AHxyDg+3ycHhDYHJAACAf+s0ZoXJdC1mD73Rg/IPg8Ibg+IfRA+3wY1KDUHT4EGB8AAAgADB4he5AACAOCnRRAnB6wIxySUAgAAAweAQCchmD27AXcNVSInlZkgPfsBID7rwP0i5AAAAAAAA8P9IAcFIwek1gfn+AwAAdxpIicFIweE8SMHoBEi6AAAAAAAAADxIAcLrdUiJwUjB6TSB+f8HAAByGkiJwUjB4TxIwegESLoAAAAAAAD/f0gJwutMSIXAdENID73ISIPxP0SNQXVBg+B/gMExRTHJSQ+lwUjT4DHS9sFATA9FyEgPRcJJD7r5MLoBPAAARCnCSMHiMEwJykiJwesEMckx0mYPUMBIweA/SAnQZkgPbshmSA9uwWYPbMFdw8zMzFVWSIPsKEiNbCQgg/oDD4eRAAAAidBIjQ0zQgAASGMEgUgByP/g6IYAAACLBZdtBgCD+AF1b0iLDdNtBgBIhcl0EUiLcRDoXQIAAEiJ8UiF9nXvSMcFsm0GAAAAAADHBWBtBgAAAAAASI0NMW0GAP8VY0cAAOsu6Bxx///rJ+guAAAA6yCDPTxtBgAAdQ1IjQ0LbQYA/xWdRwAAxwUjbQYAAQAAALgBAAAASIPEKF5dw1VBVlZXU0iD7CBIjWwkIIM9AW0GAAB0ZEiNDdBsBgD/FQpHAABIiz0zbQYASIX/dDNIix2fRwAATIs1MEcAAIsP/9NIicZB/9aFwHUOSIX2dAlIi0cISInx/9BIi38QSIX/ddtIjQ2EbAYASIPEIFtfXkFeXUj/JRNHAABIg8QgW19eQV5dw1VWV0iD7DBIjWwkMEiJ1kiJz0iNRTBMiQBMiUgISIlF+OgiAQAASIsISItF+EiJRCQgSIn6SYnwRTHJ6IADAACQSIPEMF9eXcPMzMxVSInlSIsFCQ8AAGaBOE1adU1IY1A8gTwQUEUAAHVASAHQZoF4GAsCdTUPt1AGhdJ0LUgrDdsOAABED7dAFEwBwEiDwBhEi0AMTDnBcglEA0AITDnBcgpIg8Ao/8p15jHAXcNVSInlSIsNpg4AADHAZoE5TVp1G0hjUTyBPBFQRQAAdQ5mgXwRGAsCdQUPt0QRBl3DVUiJ5UiLBXUOAABmgThNWnUWSGNIPIE8CFBFAAB1CWaBfAgYCwJ0AjHAXcNVVldTSIPsKEiNbCQgTInGSInXSInL6CEAAABIiwhIiXQkIEiJ2kmJ+EUxyeiDAgAAkEiDxChbX15dw8xVSInlSI0F7WoAAF3DzMzMzMzMzMzMzMz/JcJDAADMzMzMzMzMzMzM/yW6QwAAzMzMzMzMzMzMzP8lskMAAMzMzMzMzMzMzMz/JapDAADMzMzMzMzMzMzM/yWqQwAAzMzMzMzMzMzMzP8lqkMAAMzMzMzMzMzMzMz/JaJDAADMzMzMzMzMzMzM/yWyQwAAzMzMzMzMzMzMzP8lskMAAMzMzMzMzMzMzMz/JbpDAADMzMzMzMzMzMzM/yWyQwAAzMzMzMzMzMzMzP8lukMAAMzMzMzMzMzMzMz/JbJDAADMzMzMzMzMzMzM/yWqQwAAzMzMzMzMzMzMzP8lqkMAAMzMzMzMzMzMzMz/JaJDAADMzMzMzMzMzMzM/yWaQwAAzMzMzMzMzMzMzP8lqkMAAMzMzMzMzMzMzMz/JapDAADMzMzMzMzMzMzM/yWqQwAAzMzMzMzMzMzMzP8lokMAAMzMzMzMzMzMzMz/JZpDAADMzMzMzMzMzMzM/yWSQwAAzMzMzMzMzMzMzP8likMAAMzMzMzMzMzMzMz/JYJDAADMzMzMzMzMzMzM/yWyQgAAzMzMzMzMzMzMzP8likIAAMzMzMzMzMzMzMz/JWJCAADMzMzMzMzMzMzM/yVaQgAAzMzMzMzMzMzMzP8lUkQAAMzMzMzMzMzMzMz/JdpBAADMzMzMzMzMzMzM/yVKQgAAzMzMzMzMzMzMzP8lMkQAAMzMzMzMzMzMzMz/JbJCAADMzMzMzMzMzMzM/yWKQgAAzMzMzMzMzMzMzP8lgkIAAMzMzMzMzMzMzMz/JSJCAADMzMzMzMzMzMzM/yUKQgAAzMzMzMzMzMzMzP8lQkIAAMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzENsYXVkZSBSdXNzaWEg0L3QtSDRgdC80L7QsyDQt9Cw0L/Rg9GB0YLQuNGC0YwgQ2xhdWRlIENvZGUuINCf0LXRgNC1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auqjr074UyqInNwG80X+PwAAAAAAAAAAAAAAAACAb0AAAAAAAAAAAAAAAAAAgG/AAAAAAACAaYTRQkS1H5L/v/OZIoKTQEo0Bzfgopgxuj+4ARfFjIlphNFCRLUfkv6/uAEXxYyJaYTRQkS1H5L+PwAAAAAAAAAAAAAAAAAA/z8AAAAAAAAAAAAAAAAAAP+/AAAAAABASjQHN+CimDG6P5HNiR1T3wUBOuYzRQQncT8AAAAAAOAFATrmM0UEJ3E/ECL7y3GG97Wu3WTsxFkovwAAAAAAAAAAAAAAAAAAAID///////////////////9/AAAAAAAAAAAAAAAAAAD/fwAAAAAAAHBBAAAAAAAAAAAAAAAAAAAAgAAAAAAAAACAAABAVPshGUAxY2IaYbTwPQAAQFT7IRnAMWNiGmG08L0AADB/fNkSQMqUk6eRDuk9AAAwf3zZEsDKlJOnkQ7pvQAAQFT7IQlAMWNiGmG04D0AAEBU+yEJwDFjYhphtOC9AABAVPsh+T8xY2IaYbTQPQAAQFT7Ifm/MWNiGmG00L2DyMltMF/kPwAAAAAAADhDAAAAAAAAOMMAAEBU+yH5vzFjYhphtNA9GC1EVPsh6b8YLURU+yHpPwAAAAAAAPA/AAAAAAAA8L8AAGAaYbTQPXNwAy6KGaM7AAAALooZozvBSSAlmoN7OQAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAgP////////9//////////38YLURU+yHpPwdcFDMmpoE8c1Ng28t1876mkjegiH4UPwFl8vLYREM/KANWySJtbT831gaE9GSWP3r+EBEREcE/1Hq/dHAq+z7pp/AyD7gSP2gQjRr3JjA/FYPg/sjbVz+ThG7p4yaCP/5Bsxu6oas/Y1VVVVVV1T8AAAAAAADwvwAAAAD/////AAAAAP////8AAAAAAADwPwAAAAAAAAAA////////////////////f////////////////////38PKJtyhXe5iO/ErBdDWf4/AAAAAAAAAAAAAAAAAAAAgLgBF8WMiWmE0UJEtR+S/j9g6rsgQMd8pojgJJASzYs/AAAAAAAAAKBDb7q97UfePwAAAAAAAABAVSmMyS+p4T8AAAAAAAAAoIanjWbAlOI/AAAAAAAAACAmBSpwbNziPwAAAAAAAACQISMSG6qb5D/8gQD1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DoP//2uC//8yg///AAAAAAAAAAD///////////////////9/uAEXxYyJaYTRQkS1H5L+PwAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAP8/uoP//xKE///lg///+oP//wAAAAAAAACAAAAAAAAAAIAAAAAAAABwRwAAAAAAAPA/YIT//5OE//+ehP//soT///9//3//f/9//3//f/9//38AgACAAIAAgACAAIAAgACAAHwAAAAAgH8AAAAAAAAAAP///////////////////38AAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAD/fwAAAAAAAAAAAAAAAAAA/z//f/9//3//f/9//3//f/9/AIAAgACAAIAAgACAAIAAgAB8AAAAAID/AACAfwAAAAD/////////f/////////9/AAAAAAAAAIAAAAAAAAAAgAAAAAAAAPB/AAAAAAAA8H8AAAAAAADwPwAAAAAAAPA/////f////3////9/////fwAAAIAAAACAAAAAgAAAAIAAAIB/AACAfwAAgH8AAIB///9/////f////3////9//////3////9/AAAAAAAAAAAAAIB/AACAfwAAAAAAAAAAAACAPwAAgH8AAAAAAAAAAP9//3//f/9//3//f/9//38AgACAAIAAgACAAIAAgACAAHwAfAB8AHwAAAAAAAAAAAAAgH8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP8/AAAAAAAAAAAAAAAAAAAAgP///////////////////38AAAAAAAAAAAAAAAAAAP9/AACAfwAAAAAAAAAAAAAAAP////////9//////////38AAAAAAADwfwAAAAAAAPB/AAAAAAAA8D8AAAAAAADwPwAAAAAAAACAAAAAAAAAAIAAAAAAAADwfwAAAAAAAAAA////f////3////9/////fwAAgH8AAIB/AACAfwAAgH////9/////fwAAAAAAAAAAAACAfwAAgH8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAACAAAAAgAAAAIAAAACAAACAfwA8AAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAA/z8AAAAAAADwPwAAgD8AAAAAAAAAAAAAAAAAAAAAAID/fwAAwH8AAAAAAAAAAAAA+H8AAMB/AH4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAID/fwAAAAAAAPh/AADAfwAAAAAAgACAAIAAgACAAIAAgACAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAACA/38AAAAAAAAAgAAAAAAAAACAAADAfwAAAAAAAAAAAAD4fwAAAIAAAACAAAAAgAAAAIAAAMB/AAAAAAAAAAAAAAAA////////////////////fwAAAIAAAACAAAAAgAAAAIAAAID/AACA/wAAgP8AAID/AHwAACaO//+Xjv//VY7//2KO//8ujv//AAAAAAAAgF9dk///jJH//9+R//8Ckv//nJH//wAAAAAAAAAAAAAAAAAAMEMAADBFAAAAAAAAAAAAAAAAAAAwQwAAAAAAADBFPJT//9eU//95lP//mpT//0WU///Qlv//Zpf//wqX//8pl///2Jb//yeZ//+9mf//YZn//4CZ//8vmf//AHwAfNSa//9am///Cpv//xeb///cmv//qqD//72e//8Pn///IJ///8ye///Yof//VaL//w6i//8Vov//3qH//3Wk///vpP//qKT//6+k//96pP//56b//2Gn//8ap///Iaf//+ym//8+qv//i6j///eo//8Mqf//n6j//wAAAF8Jrv//E6z//5Os///VrP//Oaz//wAAAAAAAOBD97D//0av//+mr///za///1Kv//8AAABfIrP//86x//8usv//VbL//9qx//8AAABfCLb//2u0///ZtP//CbX//4C0//8Buf//6rb//1a3//9rt////rb//ye9//8au///mrv//8K7//9Au///47///xG+//9wvv//fb7//xy+//9zwv//58D//0bB//9Twf//8sD//y3F//9rw///2MP//+7D//9/w///AAAAAAAAAAAAAAAAAAAAgAMAAAAEAAAABAAAAAYAAACD+aIARE5uAPwpFQDRVycA3TT1AGLbwAA8mZUAQZBDAGNR/gC73qsAt2HFADpuJADSTUIASQbgAAnqLgAcktEA6x3+ACmxHADoPqcA9TWCAES7LgCc6YQAtCZwAEF+XwDWkTkAU4M5AJz0OQCLX4QAKPm9APgfOwDe/5cAD5gFABEv7wAKWosAbR9tAM9+NgAJyycARk+3AJ5mPwAt6l8Auid1AOXrxwA9e/EA9zkHAJJSigD7a+oAH7FfAAhdjQAwA1YA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Z2MAAAAAX19wX19fYXJndgAAAABfY2V4aXQAAAAAX2NvbmZpZ3VyZV9uYXJyb3dfYXJndgAAAABfY3J0X2F0ZXhpdAAAAF9leGl0AAAAX2luaXRpYWxpemVfbmFycm93X2Vudmlyb25tZW50AAAAAF9pbml0dGVybQAAAF9pbml0dGVybV9lAAAAX3NlaF9maWx0ZXJfZXhlAAAAX3NldF9hcHBfdHlwZQAAAF9zZXRfaW52YWxpZF9wYXJhbWV0ZXJfaGFuZGxlcgAAAABhYm9ydAAAAGV4aXQAAAAAX19hY3J0X2lvYl9mdW5jAAAAX19wX19jb21tb2RlAAAAAF9fcF9fZm1vZGUAAAAAX19zdGRpb19jb21tb25fdmZwcmludGYAAABfX3N0ZGlvX2NvbW1vbl92c3ByaW50ZgAAAF9fc3RkaW9fY29tbW9uX3Zzd3ByaW50ZgAAAABmZmx1c2gAAAAAZndyaXRlAAAAAHNldHZidWYAAAB3Y3NjYXQAAAAAd2NzY21wAAAAAHdjc2NweQAAAAB3Y3NsZW4AAAAAd2NzbmNtcAAAAHdjc3BicmsAAABBc3NpZ25Qcm9jZXNzVG9Kb2JPYmplY3QAAAAAQ2xvc2VIYW5kbGUAAABDcmVhdGVGaWxlVwAAAENyZWF0ZUpvYk9iamVjdFcAAAAAQ3JlYXRlUHJvY2Vzc1cAAAAARGVsZXRlQ3JpdGljYWxTZWN0aW9uAAAARW50ZXJDcml0aWNhbFNlY3Rpb24AAAAARXhpdFByb2Nlc3MAAABHZXRDb21tYW5kTGluZVcAAABHZXRDb25zb2xlV2luZG93AAAAAEdldEN1cnJlbnRQcm9jZXNzSWQAAABHZXRFbnZpcm9ubWVudFZhcmlhYmxlVwAAAEdldEV4aXRDb2RlUHJvY2VzcwAAAABHZXRGaWxlQXR0cmlidXRlc1cAAAAAR2V0TGFzdEVycm9yAAAAAEdldE1vZHVsZUZpbGVOYW1lVwAAAABHZXRTdGRIYW5kbGUAAAAASW5pdGlhbGl6ZUNyaXRpY2FsU2VjdGlvbgAAAExlYXZlQ3JpdGljYWxTZWN0aW9uAAAAAE1vdmVGaWxlRXhXAAAATXVsdGlCeXRlVG9XaWRlQ2hhcgAAAFJlYWRGaWxlAAAAAFJlc3VtZVRocmVhZAAAAABTZXRIYW5kbGVJbmZvcm1hdGlvbgAAAABTZXRJbmZvcm1hdGlvbkpvYk9iamVjdAAAAFNldFVuaGFuZGxlZEV4Y2VwdGlvbkZpbHRlcgAAAFNsZWVwAAAAVGxzR2V0VmFsdWUAAABWaXJ0dWFsUHJvdGVjdAAAAABWaXJ0dWFsUXVlcnkAAAAAV2FpdEZvclNpbmdsZU9iamVjdAAAAFdpZGVDaGFyVG9NdWx0aUJ5dGUAAABXcml0ZUZpbGUAAABfX3BfX2Vudmlyb24AAAAAX19zZXR1c2VybWF0aGVycgAAU0hFTEwzMi5kbGwAYXBpLW1zLXdpbi1jcnQtaGVhcC1sMS0xLTAuZGxsAGFwaS1tcy13aW4tY3J0LWxvY2FsZS1sMS0xLTAuZGxsAGFwaS1tcy13aW4tY3J0LXByaXZhdGUtbDEtMS0wLmRsbABhcGktbXMtd2luLWNydC1ydW50aW1lLWwxLTEtMC5kbGwAYXBpLW1zLXdpbi1jcnQtc3RkaW8tbDEtMS0wLmRsbABhcGktbXMtd2luLWNydC1zdHJpbmctbDEtMS0wLmRsbABLRVJORUwzMi5kbGwAYXBpLW1zLXdpbi1jcnQtZW52aXJvbm1lbnQtbDEtMS0wLmRsbABhcGktbXMtd2luLWNydC1tYXRoLWwxLTEtMC5kbGwAAAAAASINhSJoGgAbAxMBNwAMMAtwCmAJwAfQBeAD8AFQAAABDQZVDQMIogQwA3ACYAFQAQ0GJQ0DCEIEMANwAmABUAELBCULAwZCAmABUAENBkUNAwiCBDADcAJgAVABDQYlDQMIQgQwA3ACYAFQAREIJREDDEIIMAdwBmAF4APwAVABEQhlEWgFAA0DCMIEMANwAmABUAENBiUNAwhCBDADcAJgAVABBAIFBAMBUAkVCjUVAxBiDDALcApgCcAH0AXgA/ABUJwjAAABBAIFBAMBUAEEAgUEAwFQAQQCBQQDAVABBAIFBAMBUAEEAgUEAwFQAQwFJQwDBzIDcAJgAVAAAAEEAgUEAwFQAREIJREDDEIIMAdwBmAF4APwAVABCgMlCgMFMgFQAAABDAUlDAMHMgNwAmABUAAAAQQCBQQDAVABDAU1DAMHUgNwAmABUAAAAQQCBQQDAVABBAIFBAMBUAELBCULAwZCAmABUAEEAgUEAwFQAQwFRQwDB3IDcAJg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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAQAAAADijQKNIo1CjWKNgo2ijcKN4o4CjiKOQo5ijoKOoo7CjuKPAo8ij0KPYo+Cj8KP4owCkCKSwprimAPAAAAwAAABApUilACABAAwAAAAIoBigAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+var WRAPPER_EXE = "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AADMzMzMzMzMzMzM/yX6QQAAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMQwBDAFIAXwBUAEUAUgBNAEkATgBBAEwAAABDbGF1ZGUgUnVzc2lhINC90LUg0YHQvNC+0LMg0LfQsNC/0YPRgdGC0LjRgtGMIENsYXVkZSBDb2RlLiDQn9C10YDQtdC30LDQv9GD0YHRgtC40YLQtSBWUyBDb2RlINC4INC/0L7Qv9GA0L7QsdGD0LnRgtC1INC10YnRkSDRgNCw0LcuACIAAABDAEMAUgBfAEgATwBNAEUAAAAgAAAAQwBMAEEAVQBEAEUAXwBDAE8ATgBGAEkARwBfAEQASQBSAAAAYwBsAGEAdQBkAGUALQBhAG4AdABoAHIAbwBwAGkAYwAuAGUAeABlAAAAICglbHUpAAoAAC0ALQAAAC0ALQBpAG4AcAB1AHQALQBmAG8AcgBtAGEAdAAAAC0ALQBpAG4AcAB1AHQALQBmAG8AcgBtAGEAdAA9AAAAXABjAGMAcgAtAGUAbgB2AC4AagBzAG8AbgAAAENsYXVkZSBSdXNzaWE6INGH0YLQvtCx0Ysg0YfQsNGCINC30LDRgNCw0LHQvtGC0LDQuywg0LLQvtC50LTQuNGC0LUg0LIgQ2xhdWRlIFJ1c3NpYSDQ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Fmz1v0hVVVVVVVVVVVVVVVVV+j8AAAAAAAAAAAAAAAAAAP4/AAAAAAAAAAAAAAAAAAD/PwAAAAAAAADwi63X/xk9qz8AAAAAAAAA0PwnJg4ZdrS/AAAAAAAAAOC6lCDuuHG9PwAAAAAAAAAw/pZntEkvxr9weMT1I7SKnZYKA3cslc4/jY3W3iqXl9yBO3M+f67WvwllPfoMwMWX0IY6YSRh3j+TrnRpQnP+OE5Uf1ZkruW//mdxVRys+jhzbFU63nHsP4X3+BmgARqgARqgARqg8r9/EBEREREREREREREREfg/AAAAAAAAAAAAAAAAAAD+P1VVVVVVVVVVVVVVVVVV/D9VVVVVVVVVVVVVVVVVVfy/kBXLGaAB+j53UcEWbMFWv0xVVVVVVaU/1DiIvun6qL3EsbS9nu4hPq1SnIBPfpK+AAAAAAAA4D8AAAAAAADwP33+sVfjHcc+1WHBGaABKr+m+BARERGBP3zVz1o62eU965wriublWr4AAAAAAADgP0lVVVVVVcU/SVVVVVVVxb81wmghotoPyf4/AAAAAAAAAACAAwAAgHuyh///WIj//xGI//83iP//AAAAAAAAAAAAAACAAAAAgAAAAIAAAACAAAAAAAAAAIAAAAAAAAAAgBgtRFT7IRlAGC1EVPshGcDSITN/fNkSQNIhM3982RLAGC1EVPshCUAYLURU+yEJwBgtRFT7Ifk/GC1EVPsh+b8AAIB7AACAA+yI//8+if//w4j//yKJ//8AAAAAAAAAAP///////////////////3+4ARfFjIlphNFCRLUfkv4/AAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAhz8AAAAAAAAAAAAAAAAAAHdAHYr//4yK//9Siv//a4r//wAAAAAAAACAAAAAAAAAAIAAAAAAAABwRwAAAAAAAHA4/Yr//zWL//8Wi///IYv//////3////9/////f////38AAABLAAAAywAAAD8AAAC/AACAPwAAgL8AAAAAAAAAAAAAAIAAAACAAAAAgAAAAID///////////////////9/AAAAAAAAAAAAAAAAAABvQAAAAAAAAAAAAAAAAAAAb8AAAAAAAAAAAAAAAAAAAP4/AAAAAAAAAAAAAAAAAAD+vwAAAAAAAAAAAAAAAAAA/z8AAAAAAAAAAAAAAAAAAP+/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AACAPwEAAIA7qrg/AHIxv46+vzUVUjW7j6oqPgAAAEAAAAAA////////////////////fwAAAAAAAAAAAAAAAACA/38AAAAAAAAAAAAAAAAAdwxAAAAAAAAAAAAAAAAAAACNPzrSoP0PfXfhL7hSdlRxBUAAADBnx5NX856j7y/kYvi/jAbFFltMOZOheaBXe/mSv/vCVqXjHcc+zHl0ZkbmWj6TmwEaoAH6PiVdymNQfpI+3Al3HC8AG6ABGqABGqDyP1GUORhPiBdswRZswRZs9T8sPYEPEREREREREREREfg/QxzXU1VVVVVVVVVVVVX6P1hVVVVVVVVVVVVVVVVV/D8BAAAAAAAAAAAAAAAAAP4/AAAAAAAAAAAAAAAAAAD/PwAAAAAAAAAAAAAAAAAA/3////9/////f////3////9/AAAAgAAAAIAAAACAAAAAgAAAgH8AAIB/AACAfwAAgH8AAAAAAADgfwAAAAAAAPA/7zn6/kIuhkDSvHrdKyOGwAEAAAAAAACAUTAt1RBJh8D+gitlRxX3PwAA4P5CLua/djx5Ne856j3QpL5yaTdmPvFr0sVBvbu+LN4lr2pWET+Tvb4WbMFmvz5VVVVVVcU/AAAAAAAAAEAAAAAAAAAAADXCaCGi2g/J/j8AAAAAAAD/gf//koL//1OC//9vgv//AAAAgAAAAIAAAACAAAAAgAAAAAAAAACAAAAAAAAAAIDSITN/fNkSwBgtRFT7IRlAGC1EVPshGcAYLURU+yH5PxgtRFT7IQlAGC1EVPshCcAAAIB7AACAP86C//9eg///u4L//4KD//8AAAAAAAAAAP///////////////////3+4ARfFjIlphNFCRLUfkv4/AAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAA/z8KhP//YoT//zWE//9KhP//AAAAAAAAAIAAAAAAAAAAgAAAAAAAAHBHAAAAAAAA8D+whP//44T//+6E//8Chf///3//f/9//3//f/9//3//fwCAAIAAgACAAIAAgACAAIAAfAAAAACAfwAAAAAAAAAA////////////////////fwAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAP9/AAAAAAAAAAAAAAAAAAD/P/9//3//f/9//3//f/9//38AgACAAIAAgACAAIAAgACAAHwAAAAAgP8AAIB/AAAAAP////////9//////////38AAAAAAAAAgAAAAAAAAACAAAAAAAAA8H8AAAAAAADwfwAAAAAAAPA/AAAAAAAA8D////9/////f////3////9/AAAAgAAAAIAAAACAAAAAgAAAgH8AAIB/AACAfwAAgH///3////9/////f////3//////f////38AAAAAAAAAAAAAgH8AAIB/AAAAAAAAAAAAAIA/AACAfwAAAAAAAAAA/3//f/9//3//f/9//3//fwCAAIAAgACAAIAAgACAAIAAfAB8AHwAfAAAAAAAAAAAAACAfwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/z8AAAAAAAAAAAAAAAAAAACA////////////////////fwAAAAAAAAAAAAAAAAAA/38AAIB/AAAAAAAAAAAAAAAA/////////3//////////fwAAAAAAAPB/AAAAAAAA8H8AAAAAAADwPwAAAAAAAPA/AAAAAAAAAIAAAAAAAAAAgAAAAAAAAPB/AAAAAAAAAAD///9/////f////3////9/AACAfwAAgH8AAIB/AACAf////3////9/AAAAAAAAAAAAAIB/AACAfwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAIAAAACAAAAAgAAAAIAAAIB/ADwAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAD/PwAAAAAAAPA/AACAPwAAAAAAAAAAAAAAAAAAAAAAgP9/AADAfwAAAAAAAAAAAAD4fwAAwH8AfgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgP9/AAAAAAAA+H8AAMB/AAAAAACAAIAAgACAAIAAgACAAIAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAID/fwAAAAAAAACAAAAAAAAAAIAAAMB/AAAAAAAAAAAAAPh/AAAAgAAAAIAAAACAAAAAgAAAwH8AAAAAAAAAAAAAAAD///////////////////9/AAAAgAAAAIAAAACAAAAAgAAAgP8AAID/AACA/wAAgP8AfAAAdo7//+eO//+ljv//so7//36O//8AAAAAAACAX62T///ckf//L5L//1KS///skf//AAAAAAAAAAAAAAAAAAAwQwAAMEUAAAAAAAAAAAAAAAAAADBDAAAAAAAAMEWMlP//J5X//8mU///qlP//lZT//yCX//+2l///Wpf//3mX//8ol///d5n//w2a//+xmf//0Jn//3+Z//8AfAB8JJv//6qb//9am///Z5v//yyb///6oP//DZ///1+f//9wn///HJ///yii//+lov//XqL//2Wi//8uov//xaT//z+l///4pP///6T//8qk//83p///saf//2qn//9xp///PKf//46q///bqP//R6n//1yp///vqP//AAAAX1mu//9jrP//46z//yWt//+JrP//AAAAAAAA4ENHsf//lq////av//8dsP//oq///wAAAF9ys///HrL//36y//+lsv//KrL//wAAAF9Ytv//u7T//ym1//9Ztf//0LT//1G5//86t///prf//7u3//9Ot///d73//2q7///qu///Erz//5C7//8zwP//Yb7//8C+///Nvv//bL7//8PC//83wf//lsH//6PB//9Cwf//fcX//7vD//8oxP//PsT//8/D//8AAAAAAAAAAAAAAAAAAACAAwAAAAQAAAAEAAAABgAAAIP5ogBETm4A/CkVANFXJwDdNPUAYtvAADyZlQBBkEMAY1H+ALveqwC3YcUAOm4kANJNQgBJBuAACeouAByS0QDrHf4AKbEcAOg+pwD1NYIARLsuAJzphAC0JnAAQX5fANaROQBTgzkAnPQ5AItfhAAo+b0A+B87AN7/lwAPmAUAES/vAApaiwBtH20Az342AAnLJwBGT7cAnmY/AC3qXwC6J3UA5evHAD178QD3OQcAklKKAPtr6gAfsV8ACF2NADADVgB7/EYA8KtrACC8zwA29JoA46kdAF5hkQAIG+YAhZllAKAUXwCNQGgAgNj/ACdzTQAGBjEAylYVAMmocwB74mAAa4zAABnERwDNZ8MACejcAFmDKgCLdsQAphyWAESv3QAZV9EApT4FAAUH/wAzfj8AwjLoAJhP3gC7fTIAJj3DAB5r7wCf+F4ANR86AH/yygDxhx0AfJAhAGokfADVbvoAMC13ABU7QwC1FMYAwxmdAK3EwgAsTUEADABdAIZ9RgDjcS0Am8aaADNiAAC00nwAtKeXADdV1QDXPvYAoxAYAE12/ABknSoAcNerAGN8+AB6sFcAFxXnAMBJVgA71tkAp4Q4ACQjywDWincAWlQjAAAfuQDxChsAGc7fAJ8x/wBmHmoA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b19jb21tb25fdmZwcmludGYAAABfX3N0ZGlvX2NvbW1vbl92c3ByaW50ZgAAAF9fc3RkaW9fY29tbW9uX3Zzd3ByaW50ZgAAAABmZmx1c2gAAAAAZndyaXRlAAAAAHNldHZidWYAAAB3Y3NjYXQAAAAAd2NzY21wAAAAAHdjc2NweQAAAAB3Y3NsZW4AAAAAd2NzbmNtcAAAAHdjc3BicmsAAABBc3NpZ25Qcm9jZXNzVG9Kb2JPYmplY3QAAAAAQ2xvc2VIYW5kbGUAAABDcmVhdGVGaWxlVwAAAENyZWF0ZUpvYk9iamVjdFcAAAAAQ3JlYXRlUHJvY2Vzc1cAAAAARGVsZXRlQ3JpdGljYWxTZWN0aW9uAAAARW50ZXJDcml0aWNhbFNlY3Rpb24AAAAARXhpdFByb2Nlc3MAAABHZXRDb21tYW5kTGluZVcAAABHZXRDb25zb2xlV2luZG93AAAAAEdldEN1cnJlbnRQcm9jZXNzSWQAAABHZXRFbnZpcm9ubWVudFZhcmlhYmxlVwAAAEdldEV4aXRDb2RlUHJvY2VzcwAAAABHZXRGaWxlQXR0cmlidXRlc1cAAAAAR2V0TGFzdEVycm9yAAAAAEdldE1vZHVsZUZpbGVOYW1lVwAAAABHZXRTdGRIYW5kbGUAAAAASW5pdGlhbGl6ZUNyaXRpY2FsU2VjdGlvbgAAAExlYXZlQ3JpdGljYWxTZWN0aW9uAAAAAE1vdmVGaWxlRXhXAAAATXVsdGlCeXRlVG9XaWRlQ2hhcgAAAFJlYWRGaWxlAAAAAFJlc3VtZVRocmVhZAAAAABTZXRFbnZpcm9ubWVudFZhcmlhYmxlVwAAAFNldEhhbmRsZUluZm9ybWF0aW9uAAAAAFNldEluZm9ybWF0aW9uSm9iT2JqZWN0AAAAU2V0VW5oYW5kbGVkRXhjZXB0aW9uRmlsdGVyAAAAU2xlZXAAAABUbHNHZXRWYWx1ZQAAAFZpcnR1YWxQcm90ZWN0AAAAAFZpcnR1YWxRdWVyeQAAAABXYWl0Rm9yU2luZ2xlT2JqZWN0AAAAV2lkZUNoYXJUb011bHRpQnl0ZQAAAFdyaXRlRmlsZQAAAF9fcF9fZW52aXJvbgAAAABfX3NldHVzZXJtYXRoZXJyAABTSEVMTDMyLmRsbABhcGktbXMtd2luLWNydC1oZWFwLWwxLTEtMC5kbGwAYXBpLW1zLXdpbi1jcnQtbG9jYWxlLWwxLTEtMC5kbGwAYXBpLW1zLXdpbi1jcnQtcHJpdmF0ZS1sMS0xLTAuZGxsAGFwaS1tcy13aW4tY3J0LXJ1bnRpbWUtbDEtMS0wLmRsbABhcGktbXMtd2luLWNydC1zdGRpby1sMS0xLTAuZGxsAGFwaS1tcy13aW4tY3J0LXN0cmluZy1sMS0xLTAuZGxsAEtFUk5FTDMyLmRsbABhcGktbXMtd2luLWNydC1lbnZpcm9ubWVudC1sMS0xLTAuZGxsAGFwaS1tcy13aW4tY3J0LW1hdGgtbDEtMS0wLmRsbAAAASINhSJoGgAbAxMBNwAMMAtwCmAJwAfQBeAD8AFQAAABDQZVDQMIogQwA3ACYAFQAQ0GJQ0DCEIEMANwAmABUAELBCULAwZCAmABUAENBkUNAwiCBDADcAJgAVABDQYlDQMIQgQwA3ACYAFQAREIJREDDEIIMAdwBmAF4APwAVABEQhlEWgFAA0DCMIEMANwAmABUAENBiUNAwhCBDADcAJgAVABBAIFBAMBUAkVCjUVAxBiDDALcApgCcAH0AXgA/ABUEwkAAABBAIFBAMBUAEEAgUEAwFQAQQCBQQDAVABBAIFBAMBUAEEAgUEAwFQAQwFJQwDBzIDcAJgAVAAAAEEAgUEAwFQAREIJREDDEIIMAdwBmAF4APwAVABCgMlCgMFMgFQAAABDAUlDAMHMgNwAmABUAAAAQQCBQQDAVABDAU1DAMHUgNwAmABUAAAAQQCBQQDAVABBAIFBAMBUAELBCULAwZCAmABUAEEAgUEAwFQAQwFRQwDB3IDcAJgAVAAAAEVChUVAxAiDDALcApgCcAH0AXgA/ABUAETCVUTAw6SCjAJcAhgB8AF4APwAVAAAAELBCULAwZCAmABUAEEAgUEAwFQAQ0GNQ0DCGIEMANwAmABUAENBjUNAwhiBDADcAJgAVABCwQlCwMGQgJgAVABDwclDwMKMgYwBXAEYAPgAVAAAAEMBTUMAwdSA3ACYAFQAAABBAIFBAMBUAEEAgUEAwFQAQQCBQQDAVABDQYlDQMIQgQwA3ACYAFQAQQCBQQDAVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABExtLvAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////7////Q9QBAAQAAAAIAAAAAAAAA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";
 
 // src/machineLine.ts
 var NAME = "BB_CLAUDE_CODE_EXECUTABLE";
 var NOTE = "Claude Russia";
 var PAUSE_MS = 9e4;
 var TRIES = 4;
-var realTime = { now: () => Date.now(), pause: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms)) };
+var realTime = { now: () => Date.now(), pause: (ms) => new Promise((resolve3) => setTimeout(resolve3, ms)) };
 var MachineLine = class {
   constructor(bb, launcher, time3 = realTime) {
     this.bb = bb;
@@ -2573,18 +2912,18 @@ var MachineLine = class {
 
 // src/program.ts
 import { createReadStream as createReadStream2, createWriteStream } from "node:fs";
-import { chmod as chmod4, mkdir as mkdir7, readFile as readFile5, rename as rename2, rm as rm5, writeFile as writeFile6 } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { chmod as chmod4, mkdir as mkdir9, readFile as readFile6, rename as rename2, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import { join as join8 } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 
 // ../../vscode/claude-russia/src/download.ts
 import { createHash as createHash2 } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir as mkdir5, open, readdir as readdir3, readFile as readFile3, rm as rm4, stat, utimes } from "node:fs/promises";
+import { mkdir as mkdir7, open as open2, readdir as readdir4, readFile as readFile4, rm as rm5, stat, utimes } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
-import { basename, dirname as dirname4, join as join4 } from "node:path";
+import { basename, dirname as dirname7, join as join6 } from "node:path";
 var BadChecksum = class extends Error {
 };
 var Busy = class extends Error {
@@ -2608,7 +2947,7 @@ var Download = class _Download {
       не остаётся ничего. */
   async fetch(wanted, path, progress = () => {
   }) {
-    await mkdir5(dirname4(path), { recursive: true });
+    await mkdir7(dirname7(path), { recursive: true });
     const lock = `${path}.lock`;
     await _Download.take(lock);
     let touched = Date.now();
@@ -2624,7 +2963,7 @@ var Download = class _Download {
         progress(done, total);
       });
     } finally {
-      await rm4(lock, { force: true });
+      await rm5(lock, { force: true });
     }
   }
   async fetchLocked(wanted, path, progress) {
@@ -2643,7 +2982,7 @@ var Download = class _Download {
     await _Download.join(pieces, path);
     const sum = await _Download.sha256(path);
     if (sum !== wanted.sha256.toLowerCase()) {
-      await rm4(path, { force: true });
+      await rm5(path, { force: true });
       throw new BadChecksum(`sha256 ${sum}, \u0436\u0434\u0430\u043B\u0438 ${wanted.sha256}`);
     }
     await _Download.dropStale(path);
@@ -2656,9 +2995,9 @@ var Download = class _Download {
     return out;
   }
   static sha256(path) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const hash2 = createHash2("sha256");
-      createReadStream(path).on("data", (chunk) => hash2.update(chunk)).on("error", reject).on("end", () => resolve2(hash2.digest("hex")));
+      createReadStream(path).on("data", (chunk) => hash2.update(chunk)).on("error", reject).on("end", () => resolve3(hash2.digest("hex")));
     });
   }
   /** Часть докачивается с конца своего файла, пока приходят байты. Без Range (маленький файл)
@@ -2682,7 +3021,7 @@ var Download = class _Download {
   }
   async stream(url2, piece, have, wrote) {
     const range = piece.range ? [piece.range[0] + have, piece.range[1]] : null;
-    const file2 = await open(piece.file, range ? "a" : "w");
+    const file2 = await open2(piece.file, range ? "a" : "w");
     try {
       await this.request(url2, range, file2, wrote);
     } finally {
@@ -2692,14 +3031,14 @@ var Download = class _Download {
   request(url2, range, file2, wrote) {
     const client = url2.startsWith("https:") ? https : http;
     const headers = range ? { range: `bytes=${range[0]}-${range[1]}` } : {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       let chain = Promise.resolve();
       const fail = (error62) => chain.then(() => reject(error62), reject);
       const request = client.get(url2, { headers, agent: false }, (answer) => {
         const ok = range ? answer.statusCode === 206 : answer.statusCode === 200;
         if (!ok) {
           answer.resume();
-          fail(new Error(`HTTP ${answer.statusCode} \u043D\u0430 ${url2}`));
+          fail(new Offline(`HTTP ${answer.statusCode} \u043D\u0430 ${url2}`));
           return;
         }
         let got = 0;
@@ -2712,44 +3051,44 @@ var Download = class _Download {
           });
         });
         answer.on("end", () => chain.then(() => {
-          if (range && got !== range[1] - range[0] + 1) reject(new Error("\u0447\u0430\u0441\u0442\u044C \u043F\u0440\u0438\u0448\u043B\u0430 \u043D\u0435 \u0446\u0435\u043B\u0438\u043A\u043E\u043C"));
-          else resolve2();
+          if (range && got !== range[1] - range[0] + 1) reject(new Offline("\u0447\u0430\u0441\u0442\u044C \u043F\u0440\u0438\u0448\u043B\u0430 \u043D\u0435 \u0446\u0435\u043B\u0438\u043A\u043E\u043C"));
+          else resolve3();
         }, reject));
         answer.on("error", fail);
-        answer.on("aborted", () => fail(new Error("\u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043E\u0431\u043E\u0440\u0432\u0430\u043B\u043E\u0441\u044C")));
+        answer.on("aborted", () => fail(new Offline("\u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043E\u0431\u043E\u0440\u0432\u0430\u043B\u043E\u0441\u044C")));
       });
-      request.setTimeout(this.silenceMs, () => request.destroy(new Error("\u0441\u0435\u0440\u0432\u0435\u0440 \u043C\u043E\u043B\u0447\u0438\u0442 \u043C\u0438\u043D\u0443\u0442\u0443")));
+      request.setTimeout(this.silenceMs, () => request.destroy(new Offline("\u0441\u0435\u0440\u0432\u0435\u0440 \u043C\u043E\u043B\u0447\u0438\u0442 \u043C\u0438\u043D\u0443\u0442\u0443")));
       request.on("error", fail);
     });
   }
   /** Склеивает части по порядку в path и стирает их. */
   static async join(pieces, path) {
-    const out = await open(path, "w");
+    const out = await open2(path, "w");
     try {
-      for (const piece of pieces) await out.write(await readFile3(piece.file));
+      for (const piece of pieces) await out.write(await readFile4(piece.file));
     } finally {
       await out.close();
     }
-    for (const piece of pieces) await rm4(piece.file, { force: true });
+    for (const piece of pieces) await rm5(piece.file, { force: true });
   }
   /** Части других файлов в той же папке: брошенные загрузки прежних версий. */
   static async dropStale(path) {
     const own2 = basename(path);
-    for (const name of await readdir3(dirname4(path))) {
-      if (/\.part\d+$/.test(name) && !name.startsWith(`${own2}.part`)) await rm4(join4(dirname4(path), name), { force: true });
+    for (const name of await readdir4(dirname7(path))) {
+      if (/\.part\d+$/.test(name) && !name.startsWith(`${own2}.part`)) await rm5(join6(dirname7(path), name), { force: true });
     }
   }
   /** Берёт замок загрузки; живой чужой — Busy, брошенный — забирает. */
   static async take(lock) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        await (await open(lock, "wx")).close();
+        await (await open2(lock, "wx")).close();
         return;
       } catch (error62) {
         if (error62.code !== "EEXIST") throw error62;
         const age = await stat(lock).then((info) => Date.now() - info.mtimeMs, () => Infinity);
         if (age < _Download.STALE_LOCK) throw new Busy("\u0444\u0430\u0439\u043B \u0443\u0436\u0435 \u043A\u0430\u0447\u0430\u0435\u0442 \u0434\u0440\u0443\u0433\u043E\u0435 \u043E\u043A\u043D\u043E");
-        await rm4(lock, { force: true });
+        await rm5(lock, { force: true });
       }
     }
     throw new Busy("\u0444\u0430\u0439\u043B \u0443\u0436\u0435 \u043A\u0430\u0447\u0430\u0435\u0442 \u0434\u0440\u0443\u0433\u043E\u0435 \u043E\u043A\u043D\u043E");
@@ -2760,16 +3099,17 @@ var Download = class _Download {
 };
 
 // ../../vscode/claude-russia/src/windowFiles.ts
-import { chmod as chmod3, mkdir as mkdir6, readFile as readFile4, writeFile as writeFile5 } from "node:fs/promises";
-import { join as join5 } from "node:path";
+import { chmod as chmod3, mkdir as mkdir8, readFile as readFile5, writeFile as writeFile6 } from "node:fs/promises";
+import { join as join7 } from "node:path";
 var MCP_NAME = "claude-russia";
 var LIMITS_TOOL = "limity";
+var OWN_SETTINGS = { cleanupPeriodDays: 3650 };
 var WindowFiles = class _WindowFiles {
   /** node — бинарь VS Code (process.execPath), link — куда ходит окно. */
-  constructor(places, node2, link) {
+  constructor(places, node2, link2) {
     this.places = places;
     this.node = node2;
-    this.link = link;
+    this.link = link2;
   }
   places;
   node;
@@ -2784,21 +3124,21 @@ var WindowFiles = class _WindowFiles {
       ...hooks.UserPromptExpansion ?? [],
       { matcher: "usage", hooks: [{ type: "mcp_tool", server: MCP_NAME, tool: LIMITS_TOOL, input: { hook: "UserPromptExpansion" } }] }
     ];
-    return { ...fromServer, env, hooks };
+    return { ...fromServer, ...OWN_SETTINGS, env, hooks };
   }
   /** Пропуск и адрес в файле настроек окна и команда claude для терминала, даже когда сверка набора не прошла: без
       них окно после переезда с 1.0.1 осталось бы ни с чем — из настроек VS Code их уже убрали. Остальное не трогаем. */
   async writeLink() {
     const p = this.places;
-    const current = await readFile4(p.settings, "utf8").then((text) => JSON.parse(text), () => ({}));
+    const current = await readFile5(p.settings, "utf8").then((text) => JSON.parse(text), () => ({}));
     const env = { ...current.env, ...this.linkEnv() };
-    await mkdir6(p.config, { recursive: true });
-    await writeFile5(p.settings, JSON.stringify({ ...current, env }, null, 2), { mode: 384 });
+    await mkdir8(p.config, { recursive: true });
+    await writeFile6(p.settings, JSON.stringify({ ...current, ...OWN_SETTINGS, env }, null, 2), { mode: 384 });
     await chmod3(p.settings, 384);
     const command = _WindowFiles.terminalCommand(process.platform);
-    await mkdir6(p.terminal, { recursive: true });
-    await writeFile5(join5(p.terminal, command.name), command.text);
-    await chmod3(join5(p.terminal, command.name), 493);
+    await mkdir8(p.terminal, { recursive: true });
+    await writeFile6(join7(p.terminal, command.name), command.text);
+    await chmod3(join7(p.terminal, command.name), 493);
   }
   linkEnv() {
     return { ANTHROPIC_BASE_URL: this.link.base_url, ANTHROPIC_AUTH_TOKEN: this.link.pass };
@@ -2838,21 +3178,37 @@ var WindowFiles = class _WindowFiles {
 `).join("");
   }
   /** Обёртка для Mac и Linux на месте программы claude окна (officialBinary.ts), договорённость та же, что у
-      ccr-claude.exe для Windows. Настоящий Claude лежит рядом под именем claude-anthropic. Сессия (первое слово —
-      флаг или ничего) получает строки ccr-args, подкоманды идут как есть. Папка настроек не наша (человек нажал
-      «Отключить» или удалил расширение) — Claude запускается как есть. Папка наша, а списка флагов нет — Claude
-      не запускается: без --settings пропуск не защищён от чужого .claude/settings.json. */
+      ccr-claude.exe для Windows. Настоящий Claude лежит рядом под именем claude-anthropic. Строки ccr-args получает
+      только сессия, остальное идёт как есть. Сессию окна узнаём по --input-format до «--»: его ставит SDK у каждого
+      чата во всех версиях окна, а служебные вызовы (auth, workspace-trust, mcp, сервер Chrome) окно 2.1.325 начинает
+      с флагов, и правило первого слова их путало. Терминал (метка CCR_TERMINAL от команды claude) и bb (CCR_HOME) —
+      сессия, когда первое слово флаг или слов нет. Метка снимается первой строкой: `code .` из терминала не унесёт
+      её в новое окно. Папка настроек не наша (человек нажал «Отключить» или удалил расширение) — Claude запускается
+      как есть. Папка наша, а списка флагов нет — Claude не запускается: без --settings пропуск не защищён от чужого
+      .claude/settings.json. */
   static sh() {
     const quote = (text) => `'${text.replace(/'/g, `'\\''`)}'`;
     const noFlags = quote(say.note("\u043D\u0435\u0442 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043A \u043E\u043A\u043D\u0430"));
     return [
       "#!/bin/sh",
       "# Claude Russia: \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0435\u0442 Claude Code \u0441 \u043D\u0430\u0448\u0438\u043C\u0438 \u0444\u043B\u0430\u0433\u0430\u043C\u0438 \u0438\u0437 ccr-args. \u0424\u0430\u0439\u043B \u043A\u043B\u0430\u0434\u0451\u0442 \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435, \u043F\u0440\u0430\u0432\u043A\u0438 \u0437\u0430\u0442\u0440\u0443\u0442\u0441\u044F.",
+      'ccr_terminal="${CCR_TERMINAL:-}"; unset CCR_TERMINAL',
       'real="$(dirname "$0")/claude-anthropic"',
-      'case "${1-}" in',
-      '  -*|"") ;;',
-      '  *) exec "$real" "$@" ;;',
-      "esac",
+      'if [ -n "${CCR_HOME:-}" ] || [ -n "$ccr_terminal" ]; then',
+      '  case "${1-}" in',
+      '    -*|"") ;;',
+      '    *) exec "$real" "$@" ;;',
+      "  esac",
+      "else",
+      '  ccr_sdk=""',
+      '  for a in "$@"; do',
+      "    case $a in",
+      "      --) break ;;",
+      "      --input-format|--input-format=*) ccr_sdk=1; break ;;",
+      "    esac",
+      "  done",
+      '  [ -n "$ccr_sdk" ] || exec "$real" "$@"',
+      "fi",
       ..._WindowFiles.bbMode(quote(teksty.t("\u0411\u04111", "\u043D\u0435\u0442 \u0432\u0445\u043E\u0434\u0430"))),
       'dir="${CLAUDE_CONFIG_DIR:-}"',
       'if [ -n "$dir" ] && [ -r "$dir/ccr-args" ]; then',
@@ -2915,18 +3271,23 @@ var WindowFiles = class _WindowFiles {
     ];
   }
   /** Команда claude для терминала VS Code и для режима «Use Terminal» окна: зовёт программу claude окна, то есть
-      нашу обёртку, с нашей папкой настроек. Путь к ней кладёт в окружение терминала Terminal (terminal.ts), поэтому в
-      самом файле нет ни одного пути: файл для cmd.exe не зависит от кодировки русской папки. */
+      нашу обёртку, с нашей папкой настроек и меткой CCR_TERMINAL, по которой обёртка судит о сессии по первому слову.
+      Метка стоит в строке запуска, а не в окружении терминала: иначе её унесли бы все программы терминала. Путь к
+      обёртке кладёт в окружение терминала Terminal (terminal.ts), поэтому в самом файле нет ни одного пути: файл для
+      cmd.exe не зависит от кодировки русской папки. */
   static terminalCommand(platform) {
     if (platform === "win32") {
-      return { name: "claude.cmd", text: '@setlocal\r\n@set "CLAUDE_CONFIG_DIR=%CCR_CONFIG%"\r\n@"%CCR_CLAUDE%" %*\r\n' };
+      return {
+        name: "claude.cmd",
+        text: '@setlocal\r\n@set "CLAUDE_CONFIG_DIR=%CCR_CONFIG%"\r\n@set "CCR_TERMINAL=1"\r\n@"%CCR_CLAUDE%" %*\r\n'
+      };
     }
     return {
       name: "claude",
       text: [
         "#!/bin/sh",
         "# Claude Russia: \u043A\u043E\u043C\u0430\u043D\u0434\u0430 claude \u0432 \u0442\u0435\u0440\u043C\u0438\u043D\u0430\u043B\u0435 VS Code. \u0424\u0430\u0439\u043B \u043F\u0438\u0448\u0435\u0442 \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435, \u043F\u0440\u0430\u0432\u043A\u0438 \u0437\u0430\u0442\u0440\u0443\u0442\u0441\u044F.",
-        'CLAUDE_CONFIG_DIR="$CCR_CONFIG" exec "$CCR_CLAUDE" "$@"',
+        'CCR_TERMINAL=1 CLAUDE_CONFIG_DIR="$CCR_CONFIG" exec "$CCR_CLAUDE" "$@"',
         ""
       ].join("\n")
     };
@@ -2934,13 +3295,13 @@ var WindowFiles = class _WindowFiles {
   /** Пишет всё, что приходит со сверкой набора: настройки, MCP, навык usage и список флагов. */
   async write(fromServer, cheapModel, pluginDirs) {
     const p = this.places;
-    await mkdir6(p.config, { recursive: true });
-    await writeFile5(p.settings, JSON.stringify(this.settings(fromServer), null, 2), { mode: 384 });
+    await mkdir8(p.config, { recursive: true });
+    await writeFile6(p.settings, JSON.stringify(this.settings(fromServer), null, 2), { mode: 384 });
     await chmod3(p.settings, 384);
-    await writeFile5(p.mcp, JSON.stringify(this.mcp(), null, 2));
-    await mkdir6(p.usageSkill, { recursive: true });
-    await writeFile5(join5(p.usageSkill, "SKILL.md"), _WindowFiles.usageSkill(cheapModel));
-    await writeFile5(p.args, this.args(pluginDirs));
+    await writeFile6(p.mcp, JSON.stringify(this.mcp(), null, 2));
+    await mkdir8(p.usageSkill, { recursive: true });
+    await writeFile6(join7(p.usageSkill, "SKILL.md"), _WindowFiles.usageSkill(cheapModel));
+    await writeFile6(p.args, this.args(pluginDirs));
   }
   flags(pluginDirs) {
     const p = this.places;
@@ -2971,23 +3332,23 @@ var Program = class _Program {
   /** Стоящая версия или null. */
   async version() {
     try {
-      return JSON.parse(await readFile5(this.home.installed, "utf8")).version ?? null;
+      return JSON.parse(await readFile6(this.home.installed, "utf8")).version ?? null;
     } catch {
       return null;
     }
   }
   async install(server, binary, version4) {
     const h = this.home;
-    await mkdir7(h.places.downloads, { recursive: true });
-    await mkdir7(h.program, { recursive: true });
-    const packed = join6(h.places.downloads, `claude-${version4}.gz`);
+    await mkdir9(h.places.downloads, { recursive: true });
+    await mkdir9(h.program, { recursive: true });
+    const packed = join8(h.places.downloads, `claude-${version4}.gz`);
     await this.download.fetch({ url: server + binary.url, size: binary.size, sha256: binary.sha256 }, packed);
     const temp = `${h.real}.part`;
     await pipeline(createReadStream2(packed), createGunzip(), createWriteStream(temp, { mode: 493 }));
     await chmod4(temp, 493);
     await rename2(temp, h.real);
-    await rm5(packed, { force: true });
-    await writeFile6(h.installed, JSON.stringify({ version: version4 }));
+    await rm6(packed, { force: true });
+    await writeFile7(h.installed, JSON.stringify({ version: version4 }));
   }
   /** Обёртка на месте claude: её путь плагин отдаёт чатам bb переменной BB_CLAUDE_CODE_EXECUTABLE. Рядом запускалка
       для служебных запусков bb: без окружения чата обёртка запустила бы Claude Code с ~/.claude человека. */
@@ -3009,10 +3370,10 @@ var Program = class _Program {
   }
   /** Тот же файл уже лежит — не трогаем: на Windows файл запущенного чата не заменить. Иначе подмена целиком. */
   static async put(path, content) {
-    const now = await readFile5(path).catch(() => null);
+    const now = await readFile6(path).catch(() => null);
     if (now && now.equals(content)) return;
     const temp = `${path}.part`;
-    await writeFile6(temp, content, { mode: 493 });
+    await writeFile7(temp, content, { mode: 493 });
     await chmod4(temp, 493);
     await rename2(temp, path);
   }
@@ -3084,8 +3445,8 @@ var Account = class {
     let started;
     try {
       started = await new Server(this.base, "", this.client).start(await computerName(), platformTarget(), "bb");
-    } catch {
-      return this.set({ phase: "out", note: say2("\u043D\u0435\u0442 \u0441\u0432\u044F\u0437\u0438") });
+    } catch (error62) {
+      return this.set({ phase: "out", note: new Trouble(error62).text() });
     }
     this.set({ phase: "waiting", url: started.url, note: say2("\u0436\u0434\u0451\u043C") });
     void this.wait(started.poll, Math.min(WAIT_MS, (started.expires_in ?? 600) * 1e3));
@@ -3135,7 +3496,7 @@ var Account = class {
     const api = new Server(this.base, "", this.client);
     const deadline = Date.now() + ms;
     while (Date.now() < deadline && this.view.phase === "waiting") {
-      await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
+      await new Promise((resolve3) => setTimeout(resolve3, POLL_MS));
       try {
         const polled = await api.poll(poll);
         if (polled.status === "gone") break;
@@ -3175,8 +3536,8 @@ var Account = class {
     }
     try {
       const places = this.home.places;
-      await mkdir8(dirname5(places.pyHook), { recursive: true });
-      await writeFile7(places.pyHook, PY_HOOK);
+      await mkdir10(dirname8(places.pyHook), { recursive: true });
+      await writeFile8(places.pyHook, PY_HOOK);
       await this.kit().sync(this.server());
     } catch (error62) {
       if (error62 instanceof DeviceGone) return void await this.gone(device);
@@ -8353,7 +8714,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve2) {
+function isRecursive(inst, stack, resolve3) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -8363,7 +8724,7 @@ function isRecursive(inst, stack, resolve2) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve2);
+      const answer = isRecursive(child, stack, resolve3);
       if (answer > result)
         result = answer;
     }
@@ -8374,7 +8735,7 @@ function isRecursive(inst, stack, resolve2) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve2) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve3) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -8438,7 +8799,7 @@ function isRecursive(inst, stack, resolve2) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve2 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve3 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -8502,7 +8863,7 @@ function bucketFor(state, inst) {
   return bucket;
 }
 var handoff;
-var open2 = [];
+var open3 = [];
 var memo = {
   alloc(_inst, payload, empty) {
     const bucket = handoff;
@@ -8511,7 +8872,7 @@ var memo = {
     handoff = void 0;
     const entry = { value: empty, issues: null };
     bucket.set(payload.value, entry);
-    open2.push(entry);
+    open3.push(entry);
     return empty;
   },
   guard(inst) {
@@ -8582,10 +8943,10 @@ var memo = {
           return payload;
         }
         handoff = bucket;
-        const depth = open2.length;
+        const depth = open3.length;
         const result = base(payload, ctx);
         handoff = void 0;
-        const entry = open2.length > depth ? open2.pop() : void 0;
+        const entry = open3.length > depth ? open3.pop() : void 0;
         if (result instanceof Promise) {
           return result.then((r) => {
             if (entry)
@@ -23023,11 +23384,11 @@ var menuContract = defineRpcContract({
 });
 
 // src/home.ts
-import { homedir } from "node:os";
-import { join as join8 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { join as join10 } from "node:path";
 
 // ../../vscode/claude-russia/src/places.ts
-import { join as join7 } from "node:path";
+import { join as join9 } from "node:path";
 var Places = class {
   /** root — папка данных расширения, dist — папка dist/ установленного расширения. */
   constructor(root, dist, platform = process.platform, env = process.env) {
@@ -23042,90 +23403,99 @@ var Places = class {
   env;
   /** Пропуск к модели и ключ устройства, права 0600. */
   get secrets() {
-    return join7(this.root, "secrets.json");
+    return join9(this.root, "secrets.json");
   }
   /** Настройки claudeCode, которые стояли до нас: их возвращает «Отключить» и удаление расширения. */
   get before() {
-    return join7(this.root, "prezhnie.json");
+    return join9(this.root, "prezhnie.json");
   }
   /** Что из набора уже скачано: sha256 архивов и папки, которые они разложили. */
   get kitState() {
-    return join7(this.root, "nabor.json");
+    return join9(this.root, "nabor.json");
   }
   /** Папка настроек окна Claude (CLAUDE_CONFIG_DIR): история чатов живёт здесь, в projects/. */
   get config() {
-    return join7(this.root, "claude");
+    return join9(this.root, "claude");
+  }
+  /** История чатов окна: папки проектов с файлами чатов. */
+  get projects() {
+    return join9(this.config, "projects");
   }
   get claudeMd() {
-    return join7(this.config, "CLAUDE.md");
+    return join9(this.config, "CLAUDE.md");
   }
   /** Файл состояния Claude: знакомство и доверенные папки (claudeState.ts). */
   get claudeState() {
-    return join7(this.config, ".claude.json");
+    return join9(this.config, ".claude.json");
   }
   get settings() {
-    return join7(this.config, "ccr-settings.json");
+    return join9(this.config, "ccr-settings.json");
   }
   get mcp() {
-    return join7(this.config, "ccr-mcp.json");
+    return join9(this.config, "ccr-mcp.json");
   }
   get plugins() {
-    return join7(this.config, "ccr-plugins");
+    return join9(this.config, "ccr-plugins");
   }
   get skills() {
-    return join7(this.config, "skills");
+    return join9(this.config, "skills");
   }
   get usageSkill() {
-    return join7(this.skills, "usage");
+    return join9(this.skills, "usage");
   }
   /** Наши флаги окна, по строке на слово: их читают обе обёртки (CLAUDE_CONFIG_DIR/ccr-args). */
   get args() {
-    return join7(this.config, "ccr-args");
+    return join9(this.config, "ccr-args");
   }
   /** Обёртка sh версий до 1.0.7, которая жила здесь; «Отключить» стирает её. Срез: убрать, когда у всех
       подключённых будет 1.0.7 и новее. */
   get oldWrapperSh() {
-    return join7(this.root, "ccr-claude");
+    return join9(this.root, "ccr-claude");
   }
   /** Обёртка для Windows из установки: её копию расширение кладёт на место claude.exe окна (officialBinary.ts). */
   get wrapperExe() {
-    return join7(this.dist, "ccr-claude.exe");
+    return join9(this.dist, "ccr-claude.exe");
   }
-  /** Команда claude для терминала VS Code: эту папку расширение ставит первой в PATH терминалов. На Windows —
-      общая папка ProgramData: окно Claude Code находит claude через where.exe, а тот печатает путь в старой
-      кодировке консоли, и русское имя пользователя в пути окно читает искажённым (прогон 21.10). В файле команды
-      путей нет, он одинаков у всех людей компьютера. */
+  /** Команда claude для терминала VS Code: эту папку расширение ставит первой в PATH терминалов. Своя у каждой
+      учётки и каждой программы: общего на компьютер не пишем, чужой файл в общей папке нельзя ни переписать, ни
+      запускать от своего имени (тикет 134). */
   get terminal() {
-    const shared = this.env.ProgramData;
-    if (this.platform === "win32" && shared && /^[\x20-\x7e]+$/.test(shared)) return join7(shared, "ClaudeRussia");
-    return join7(this.root, "terminal");
+    return join9(this.root, "terminal");
   }
-  /** Своя ли у расширения папка команды claude (на Windows она общая, её не стираем). */
-  get ownTerminal() {
-    return this.terminal === join7(this.root, "terminal");
+  /** Общая папка команды версий 1.0.1–1.0.8 на Windows. Новая версия в неё не пишет и убирает её из PATH: её файл мог
+      создать сосед по компьютеру. Срез: убрать, когда у всех подключённых с Windows будет 1.0.9 и новее. */
+  get oldSharedTerminal() {
+    const shared = this.env.ProgramData;
+    return this.platform === "win32" && shared ? join9(shared, "ClaudeRussia") : null;
+  }
+  /** Найдёт ли окно Claude Code нашу команду в режиме «Use Terminal». На Windows окно ищет её через where.exe и читает
+      его ответ как UTF-8, а where.exe печатает путь в старой кодировке консоли: путь не латиницей окно читает
+      искажённым (прогон 21.10). */
+  get terminalFindable() {
+    return this.platform !== "win32" || /^[\x20-\x7e]+$/.test(this.terminal);
   }
   /** Скачанные файлы перед установкой. */
   get downloads() {
-    return join7(this.root, "downloads");
+    return join9(this.root, "downloads");
   }
   /** Копии mcp.cjs и py-hook.cjs: путь не меняется, когда расширение обновилось в новую папку. */
   get bin() {
-    return join7(this.root, "bin");
+    return join9(this.root, "bin");
   }
   get mcpScript() {
-    return join7(this.bin, "mcp.cjs");
+    return join9(this.bin, "mcp.cjs");
   }
   get pyHook() {
-    return join7(this.bin, "py-hook.cjs");
+    return join9(this.bin, "py-hook.cjs");
   }
   plugin(name) {
-    return join7(this.plugins, name);
+    return join9(this.plugins, name);
   }
 };
 
 // src/home.ts
 var Home = class {
-  constructor(root = join8(homedir(), ".claude-russia", "bb"), platform = process.platform) {
+  constructor(root = join10(homedir2(), ".claude-russia", "bb"), platform = process.platform) {
     this.root = root;
     this.platform = platform;
     this.places = new Places(root, root, platform);
@@ -23136,43 +23506,43 @@ var Home = class {
   places;
   /** Наше окружение Claude объектом JSON: его обёртка вписывает в --settings от bb. Права 0600. */
   get env() {
-    return join8(this.root, "ccr-env.json");
+    return join10(this.root, "ccr-env.json");
   }
   /** Флаги наборов по строке на слово: обёртка ставит их в конец. */
   get args() {
-    return join8(this.root, "ccr-args");
+    return join10(this.root, "ccr-args");
   }
   /** Настройки набора с сервера: слой пользователя в нашей папке Claude. */
   get userSettings() {
-    return join8(this.places.config, "settings.json");
+    return join10(this.places.config, "settings.json");
   }
   /** Программа claude из копии Claude Russia и обёртка на её месте. */
   get program() {
-    return join8(this.root, "programma");
+    return join10(this.root, "programma");
   }
   get wrapper() {
-    return join8(this.program, this.platform === "win32" ? "claude.exe" : "claude");
+    return join10(this.program, this.platform === "win32" ? "claude.exe" : "claude");
   }
   get real() {
-    return join8(this.program, this.platform === "win32" ? "claude-anthropic.exe" : "claude-anthropic");
+    return join10(this.program, this.platform === "win32" ? "claude-anthropic.exe" : "claude-anthropic");
   }
   /** Запускалка для служебных запусков bb (статус, модели, проверка): обёртка с нашими CCR_HOME и CLAUDE_CONFIG_DIR.
       Её путь плагин пишет в окружение машины bb (machineLine.ts). */
   // срез: работает на Маке и Linux, переделать когда в сервисе появится первый компьютер bb с win32 (нужна отдельная программа, как ccr-claude.exe)
   get launcher() {
-    return this.platform === "win32" ? null : join8(this.program, "claude-bb");
+    return this.platform === "win32" ? null : join10(this.program, "claude-bb");
   }
   /** Какая версия программы стоит. */
   get installed() {
-    return join8(this.program, "version.json");
+    return join10(this.program, "version.json");
   }
 };
 
 // ../../vscode/claude-russia/src/mcp/tools.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir9, readdir as readdir4, readFile as readFile6, stat as stat2, writeFile as writeFile8 } from "node:fs/promises";
-import { homedir as homedir2, tmpdir } from "node:os";
-import { basename as basename2, dirname as dirname6, join as join9, relative, resolve } from "node:path";
+import { mkdir as mkdir11, readdir as readdir5, readFile as readFile7, stat as stat2, writeFile as writeFile9 } from "node:fs/promises";
+import { homedir as homedir3, tmpdir } from "node:os";
+import { basename as basename2, dirname as dirname9, join as join11, relative, resolve as resolve2 } from "node:path";
 var TOOLS = [
   {
     name: "komanda",
@@ -23272,12 +23642,12 @@ var Tools = class _Tools {
     return { content: [{ type: "text", text: text || "(\u043F\u0443\u0441\u0442\u043E\u0439 \u0432\u044B\u0432\u043E\u0434)" }], isError: ran.code !== 0 };
   }
   async zagruzit(server, local, remote) {
-    const from = resolve(this.cwd, local);
+    const from = resolve2(this.cwd, local);
     const files = (await stat2(from)).isDirectory() ? await _Tools.walk(from) : [from];
     const base = files.length === 1 && files[0] === from ? null : from;
     let bytes = 0;
     for (const file2 of files) {
-      const body = await readFile6(file2);
+      const body = await readFile7(file2);
       const target = base ? `${remote.replace(/\/+$/, "")}/${relative(base, file2).split("\\").join("/")}` : remote;
       await server.putFile(target, body);
       bytes += body.length;
@@ -23286,19 +23656,19 @@ var Tools = class _Tools {
   }
   async skachat(server, remote, local) {
     const body = await server.getFile(remote);
-    const to = resolve(this.cwd, local);
-    await mkdir9(dirname6(to), { recursive: true });
-    await writeFile8(to, body);
+    const to = resolve2(this.cwd, local);
+    await mkdir11(dirname9(to), { recursive: true });
+    await writeFile9(to, body);
     return _Tools.ok(`\u0421\u043A\u0430\u0447\u0430\u043D\u043E \u0441 \u0441\u0435\u0440\u0432\u0435\u0440\u0430: ${to}, ${body.length} \u0431\u0430\u0439\u0442`);
   }
   /** Файл едет в свою временную папку на сервере, читается там galera-read и стирается той же
       командой. Длинный вывод galera-read кладёт файлом рядом: команда печатает его за меткой, а мы
       кладём его на компьютер и подменяем в ответе серверный путь местным. */
   async prochitat(server, path, sheet) {
-    const from = resolve(this.cwd, path.replace(/^~(?=$|[\\/])/, homedir2()));
+    const from = resolve2(this.cwd, path.replace(/^~(?=$|[\\/])/, homedir3()));
     let body;
     try {
-      body = await readFile6(from);
+      body = await readFile7(from);
     } catch {
       return _Tools.fail(`\u043D\u0435 \u043D\u0430\u0448\u0451\u043B \u0444\u0430\u0439\u043B \u043D\u0430 \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435: ${from}`);
     }
@@ -23312,9 +23682,9 @@ var Tools = class _Tools {
     const [said, full] = _Tools.split(ran.out);
     let text = said.trim();
     if (full) {
-      const local = join9(tmpdir(), "claude-russia", "prochitat", full.name);
-      await mkdir9(dirname6(local), { recursive: true });
-      await writeFile8(local, full.text);
+      const local = join11(tmpdir(), "claude-russia", "prochitat", full.name);
+      await mkdir11(dirname9(local), { recursive: true });
+      await writeFile9(local, full.text);
       text = text.replace(/Полный текст лежит в \S.*$/m, `\u041F\u043E\u043B\u043D\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u043B\u0435\u0436\u0438\u0442 \u043D\u0430 \u044D\u0442\u043E\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435: ${local}`);
     }
     if (ran.cut) text += "\n[\u0442\u0435\u043A\u0441\u0442 \u0434\u043B\u0438\u043D\u043D\u0435\u0435 1 \u041C\u0438\u0411 \u0438 \u043E\u0431\u0440\u0435\u0437\u0430\u043D: \u0447\u0438\u0442\u0430\u0439 \u043A\u043D\u0438\u0433\u0443 \u043F\u043E \u043B\u0438\u0441\u0442\u0430\u043C]";
@@ -23337,8 +23707,8 @@ ${FULL_MARK} `);
   }
   static async walk(dir) {
     const out = [];
-    for (const entry of await readdir4(dir, { withFileTypes: true })) {
-      const path = join9(dir, entry.name);
+    for (const entry of await readdir5(dir, { withFileTypes: true })) {
+      const path = join11(dir, entry.name);
       if (entry.isDirectory()) out.push(...await _Tools.walk(path));
       else if (entry.isFile()) out.push(path);
     }
